@@ -28,8 +28,9 @@ from email.mime.application import MIMEApplication
 from http.server import BaseHTTPRequestHandler
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "workbench.db")
-UPLOAD_DIR = os.path.join(BASE_DIR, "..", "uploads")
+# 数据库路径支持环境变量覆盖（云托管/容器场景挂载持久盘时使用）
+DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "workbench.db"))
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "..", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 内存会话表 token -> user_id
@@ -159,12 +160,20 @@ def init_db():
             c.execute(f"ALTER TABLE customers ADD COLUMN {col}")
         except Exception:
             pass
-    # 预置管理员账号（首个管理员，登录后请尽快修改密码）
+    # 预置管理员账号（保证系统始终至少有一个管理员）
     try:
-        if c.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin'").fetchone()["n"] == 0:
-            ah, asalt = hash_pass("admin123")
-            c.execute("INSERT INTO users (username,display_name,pass_hash,salt,created_at,role) VALUES (?,?,?,?,?,'admin')",
-                      ("admin", "系统管理员", ah, asalt, now_iso()))
+        admin_count = c.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin'").fetchone()["n"]
+        if admin_count == 0:
+            user_count = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+            if user_count == 0:
+                # 空库：创建系统管理员
+                ah, asalt = hash_pass("admin123")
+                c.execute("INSERT INTO users (username,display_name,pass_hash,salt,created_at,role) VALUES (?,?,?,?,?,'admin')",
+                          ("admin", "系统管理员", ah, asalt, now_iso()))
+            else:
+                # 有用户但无管理员：把第一个注册的用户提升为管理员
+                first_uid = c.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()["id"]
+                c.execute("UPDATE users SET role='admin' WHERE id=?", (first_uid,))
     except Exception:
         pass
     conn.commit()
