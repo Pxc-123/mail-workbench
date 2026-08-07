@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: sales-mail-workbench
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: "echo build"
+    startCommand: "python app.py"
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PYTHON_VERSION
+        value: "3.11"

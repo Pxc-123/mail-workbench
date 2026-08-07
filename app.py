@@ -1,0 +1,1128 @@
+# -*- coding: utf-8 -*-
+"""
+销售邮件发送工作台 - 后端服务（Python 标准库，零外部依赖）
+提供：多用户注册/登录（独立空间隔离）、待办、客户、标签、邮件模板、
+展会资料、AI 生成、邮件预览/发送、发送日志、系统设置。
+运行：python app.py  （默认 http://127.0.0.1:8000）
+"""
+import http.server
+import socketserver
+import sqlite3
+import json
+import os
+import re
+import random
+import string
+import hashlib
+import datetime
+import threading
+import urllib.parse
+import csv
+import io
+import smtplib
+import ssl
+import mimetypes
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+from http.server import BaseHTTPRequestHandler
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "workbench.db")
+UPLOAD_DIR = os.path.join(BASE_DIR, "..", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# 内存会话表 token -> user_id
+SESSIONS = {}
+SESS_LOCK = threading.Lock()
+
+# ---------------------------- 数据库 ----------------------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        display_name TEXT,
+        pass_hash TEXT,
+        salt TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+        user_id INTEGER PRIMARY KEY,
+        smtp_host TEXT, smtp_port INTEGER, smtp_user TEXT, smtp_pass TEXT,
+        from_email TEXT, from_name TEXT,
+        default_interval INTEGER DEFAULT 5,
+        demo_mode INTEGER DEFAULT 1,
+        signature TEXT
+    );
+    CREATE TABLE IF NOT EXISTS todos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        due_time TEXT,
+        bind_date TEXT,
+        priority TEXT DEFAULT '中',
+        customer_id INTEGER,
+        done INTEGER DEFAULT 0,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        UNIQUE(user_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS customers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        company TEXT,
+        contact TEXT,
+        email TEXT,
+        phone TEXT,
+        exhibition TEXT,
+        tags TEXT DEFAULT '',
+        remark TEXT DEFAULT '',
+        region TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS exhibitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        city TEXT,
+        date_text TEXT,
+        note TEXT
+    );
+    CREATE TABLE IF NOT EXISTS materials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        exhibition_id INTEGER,
+        name TEXT,
+        file_path TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT,
+        exhibition TEXT,
+        customer_type TEXT,
+        scene TEXT,
+        tone TEXT,
+        subject TEXT,
+        body TEXT,
+        signature TEXT,
+        attachment_ids TEXT DEFAULT '',
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS email_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        exhibition TEXT,
+        template_name TEXT,
+        customer_company TEXT,
+        contact TEXT,
+        email TEXT,
+        subject TEXT,
+        body TEXT,
+        status TEXT,
+        error TEXT,
+        sent_at TEXT
+    );
+    """)
+    # 预置展会（全局共享只读，存到 user_id=0 表示系统级）
+    c.execute("SELECT COUNT(*) AS n FROM exhibitions WHERE user_id=0")
+    if c.fetchone()["n"] == 0:
+        for ex in [("SIAL 巴黎食品展","法国巴黎","2026-10-18 ~ 10-22"),
+                   ("越南国际食品展","越南胡志明市","2026-08-12 ~ 08-15"),
+                   ("德国 ANUGA 食品展","德国科隆","2026-10-07 ~ 10-11"),
+                   ("日本 FOODEX","日本千叶","2027-03-09 ~ 03-12"),
+                   ("泰国 THAIFEX","泰国曼谷","2026-05-26 ~ 05-30")]:
+            c.execute("INSERT INTO exhibitions (user_id,name,city,date_text) VALUES (0,?,?,?)", ex)
+    # 用户角色列（admin / member），旧库安全添加
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'member'")
+    except Exception:
+        pass
+    # 客户扩展列（remark/region/source），旧库安全添加
+    for col in ["remark TEXT DEFAULT ''", "region TEXT DEFAULT ''", "source TEXT DEFAULT ''"]:
+        try:
+            c.execute(f"ALTER TABLE customers ADD COLUMN {col}")
+        except Exception:
+            pass
+    # 预置管理员账号（首个管理员，登录后请尽快修改密码）
+    try:
+        if c.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin'").fetchone()["n"] == 0:
+            ah, asalt = hash_pass("admin123")
+            c.execute("INSERT INTO users (username,display_name,pass_hash,salt,created_at,role) VALUES (?,?,?,?,?,'admin')",
+                      ("admin", "系统管理员", ah, asalt, now_iso()))
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
+
+# ---------------------------- 工具函数 ----------------------------
+def now_iso():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def hash_pass(password, salt=None):
+    if salt is None:
+        salt = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    h = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+    return h, salt
+
+def gen_token():
+    return ''.join(random.choices(string.hexdigits, k=40))
+
+def auth_user(handler):
+    """从 Authorization: Bearer <token> 或 ?token= 解析用户"""
+    auth = handler.headers.get("Authorization", "")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth[7:].strip()
+    if not token:
+        qs = urllib.parse.urlparse(handler.path).query
+        token = urllib.parse.parse_qs(qs).get("token", [None])[0]
+    if not token:
+        # 也尝试从 body
+        return None
+    with SESS_LOCK:
+        uid = SESSIONS.get(token)
+    if not uid:
+        return None
+    conn = get_db()
+    u = conn.execute("SELECT id,username,display_name,role FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return dict(u) if u else None
+
+def require_user(handler):
+    u = auth_user(handler)
+    if not u:
+        return None, json_resp({"error": "未登录或登录已过期"}, 401)
+    return u, None
+
+def require_admin(handler):
+    u, err = require_user(handler)
+    if err:
+        return None, err
+    if u.get("role") != "admin":
+        return None, json_resp({"error": "需要管理员权限"}, 403)
+    return u, None
+
+def json_resp(obj, code=200):
+    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return code, {"Content-Type": "application/json; charset=utf-8"}, body
+
+def read_json_body(handler):
+    length = int(handler.headers.get("Content-Length", 0) or 0)
+    if length == 0:
+        return {}
+    raw = handler.rfile.read(length)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+
+def read_multipart(handler):
+    """兼容接口：实际不再使用（改用 base64 JSON 方式传文件）"""
+    return {}, {}
+
+def row_to_dict(r):
+    return dict(r) if r else None
+
+# ---------------------------- AI 邮件生成（模板引擎，离线可用） ----------------------------
+SCENE_LABELS = {
+    "1": "初次开发陌生客户",
+    "2": "跟进意向客户推送最新行业新闻",
+    "3": "通知展位余量紧张催单",
+    "4": "通知创新大奖申报截止提醒",
+    "5": "展会补贴政策通知",
+}
+TONE_LABELS = {"正式商务": "正式商务", "简洁干练": "简洁干练", "温和友好": "温和友好", "简短": "简短"}
+
+TYPE_INTRO = {
+    "预制菜": "贵司在预制菜领域的产品矩阵与出海布局",
+    "调味品": "贵司在调味品赛道的产品创新与海外渠道拓展",
+    "零食": "贵司在休闲零食品类的爆款打造与跨境销售",
+    "原料": "贵司作为食品原料供应商的产能与品质优势",
+    "综合食品企业": "贵司综合食品业务的多品类出海机会",
+}
+
+def build_email(exhibition, customer_type, scene, tone, custom_input, signature):
+    ex = exhibition or "本次海外食品展"
+    ctype = customer_type or "食品企业"
+    scene_key = scene if scene in SCENE_LABELS else "1"
+    tone_key = tone if tone in TONE_LABELS else "正式商务"
+    intro = TYPE_INTRO.get(ctype, "贵司在食品领域的产品与渠道优势")
+    news = (custom_input or "").strip()
+
+    # 称呼占位（发送时按客户替换）
+    salutation = "尊敬的 {联系人姓名}（{客户名称}）："
+
+    scene_body = {
+        "1": (
+            f"您好！我是「{ex}」中国区招展团队的{ '{销售姓名}' }。{ex}作为全球食品行业最具影响力的专业展会之一，"
+            f"每年汇聚来自世界各地的采购商、品牌商与渠道方。结合{intro}，我们相信贵司非常契合本次展会的买家画像。\n\n"
+            f"借此邮件，诚挚邀请贵司莅临{ ex }，与海外买家面对面洽谈、拓展订单。如您方便，我可先发送展位图与参展方案供参考。"
+        ),
+        "2": (
+            f"您好！持续关注贵司在海外市场的进展。近期食品行业有几条值得留意的动态，特别与{intro}相关：\n\n"
+            f"{ ('【行业资讯】\n' + news) if news else '【行业资讯】近期多国进口食品需求回暖，买家采购意愿明显增强。' }\n\n"
+            f"结合上述趋势，{ex}将是贵司触达精准海外买家的优质窗口。如需，我可补充本次展会的买家结构与往届成交数据。"
+        ),
+        "3": (
+            f"您好！关于{ ex }，需向您同步一个重要进展：目前优质展位余量已非常紧张，尤其贴合{intro}的展区所剩无几。\n\n"
+            f"{ ('您此前关注的重点如下：\n' + news + '\n') if news else '' }"
+            f"为保障贵司的参展位置与最佳曝光，建议尽快确认展位意向，避免错失黄金档期。我可为您预留 48 小时优先选位。"
+        ),
+        "4": (
+            f"您好！{ ex }「创新大奖」申报通道现已开启，申报截止日期临近。该奖项面向具有产品创新力的食品企业，"
+            f"与{intro}高度契合，是提升品牌国际曝光、获得海外买家信任的绝佳机会。\n\n"
+            f"{ ('补充信息：\n' + news + '\n') if news else '' }"
+            f"如贵司有意向参与，我可协助整理申报材料并对接组委会。请勿错过截止时间。"
+        ),
+        "5": (
+            f"您好！就贵司关注出海拓展的成本问题，特向您同步{ ex }相关的参展补贴政策：多地商务主管部门对中小企业海外参展给予"
+            f"展位费补贴（通常 50%~70% 不等），可显著降低出海门槛。\n\n"
+            f"{ ('政策要点：\n' + news + '\n') if news else '' }"
+            f"如贵司计划参展，建议尽早确认以赶上补贴申报周期，我可协助准备相关材料。"
+        ),
+    }[scene_key]
+
+    tone_tail = {
+        "正式商务": "静候佳音，顺颂商祺。",
+        "简洁干练": "期待您的回复， we can move fast.",
+        "温和友好": "无论是否参展，都欢迎随时交流，祝生意兴隆！",
+        "简短": "盼复，谢谢。",
+    }[tone_key]
+
+    if tone_key == "简短":
+        scene_body = scene_body.split("\n\n")[0]
+
+    body = f"{salutation}\n\n{scene_body}\n\n{tone_tail}\n\n{signature or '{销售姓名}'}｜{ex} 招展团队"
+
+    subject_map = {
+        "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
+        "2": f"[{ctype}行业资讯] 附 {ex} 出海机会",
+        "3": f"【展位余量提醒】{ex} 优质展区所剩无几",
+        "4": f"【申报截止提醒】{ex} 创新大奖即将关闭通道",
+        "5": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
+    }
+    subject = subject_map[scene_key]
+    if news:
+        subject = subject  # 保持简洁
+    return subject, body
+
+# ---------------------------- 邮件发送 ----------------------------
+def load_settings(user_id):
+    conn = get_db()
+    s = conn.execute("SELECT * FROM settings WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    if not s:
+        return {"demo_mode": 1, "default_interval": 5, "signature": ""}
+    return row_to_dict(s)
+
+def personalize(text, customer, sales_name):
+    if not text:
+        return ""
+    rep = {
+        "{客户名称}": customer.get("company") or "",
+        "{联系人姓名}": customer.get("contact") or "",
+        "{销售姓名}": sales_name or "",
+        "{邮箱}": customer.get("email") or "",
+        "{手机号}": customer.get("phone") or "",
+        "{意向展会}": customer.get("exhibition") or "",
+    }
+    for k, v in rep.items():
+        text = text.replace(k, v)
+    return text
+
+def send_one_email(user_id, to_email, subject, html_body, settings, attachments, cc, bcc):
+    """返回 (status, error)"""
+    if settings.get("demo_mode"):
+        return "success", "演示模式（未实际外发）"
+    if not (settings.get("smtp_host") and settings.get("from_email")):
+        return "success", "未配置 SMTP，演示记录"
+    try:
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = f"{settings.get('from_name','')} <{settings.get('from_email')}>"
+        msg["To"] = to_email
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        if bcc:
+            msg["Bcc"] = ", ".join(bcc)
+        msg.attach(MIMEText(html_body, "plain", "utf-8"))
+        for att in attachments or []:
+            path = att.get("file_path")
+            if path and os.path.exists(path):
+                with open(path, "rb") as f:
+                    part = MIMEApplication(f.read(), Name=att.get("name", "attachment"))
+                    part["Content-Disposition"] = f'attachment; filename="{att.get("name","attachment")}"'
+                    msg.attach(part)
+        recipients = [to_email] + (cc or []) + (bcc or [])
+        port = int(settings.get("smtp_port", 25))
+        # 465 为 SSL 直连端口；587/25 等用 STARTTLS
+        ssl_ctx = ssl.create_default_context()
+        if port == 465:
+            server = smtplib.SMTP_SSL(settings["smtp_host"], port, timeout=20, context=ssl_ctx)
+        else:
+            server = smtplib.SMTP(settings["smtp_host"], port, timeout=20)
+            server.starttls()
+        with server:
+            if settings.get("smtp_user"):
+                server.login(settings["smtp_user"], settings.get("smtp_pass", ""))
+            server.sendmail(settings["from_email"], recipients, msg.as_string())
+        return "success", ""
+    except Exception as e:
+        return "failed", str(e)
+
+# ---------------------------- 路由处理 ----------------------------
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code, headers, body):
+        self.send_response(code)
+        for k, v in headers.items():
+            self.send_header(k, v)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self._send(204, {}, b"")
+
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        # 静态文件（兼容两种部署：/static/ 前缀 与 根相对路径 /css/ /js/）
+        if path == "/" or path == "/index.html":
+            return self.serve_static("index.html", "text/html")
+        if path.startswith("/static/"):
+            rel = path[len("/static/"):]
+            return self.serve_static(rel, None)
+        # 根相对路径：/css/... /js/... 直接映射到 frontend 目录（同源部署用）
+        if path.startswith("/css/") or path.startswith("/js/"):
+            return self.serve_static(path.lstrip("/"), None)
+        # 其它带扩展名的静态资源（favicon.ico 等）
+        last = path.split("/")[-1]
+        if "." in last and not path.startswith("/api/"):
+            return self.serve_static(path.lstrip("/"), None)
+        # API
+        code, headers, body = self.route_get(path)
+        self._send(code, headers, body)
+
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        code, headers, body = self.route_post(path)
+        self._send(code, headers, body)
+
+    def do_PATCH(self):
+        path = urllib.parse.urlparse(self.path).path
+        code, headers, body = self.route_patch(path)
+        self._send(code, headers, body)
+
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        code, headers, body = self.route_delete(path)
+        self._send(code, headers, body)
+
+    def serve_static(self, rel, ctype):
+        # 兼容两种目录布局：部署布局(deploy/app.py + deploy/frontend/) 与 开发布局(backend/app.py + ../frontend/)
+        candidates = [
+            os.path.normpath(os.path.join(BASE_DIR, "frontend", rel)),
+            os.path.normpath(os.path.join(BASE_DIR, "..", "frontend", rel)),
+        ]
+        fp = next((c for c in candidates if os.path.isfile(c)), None)
+        if not fp:
+            self._send(404, {"Content-Type": "text/plain"}, b"Not Found")
+            return
+        if ctype is None:
+            ctype, _ = mimetypes.guess_type(fp)
+            ctype = ctype or "application/octet-stream"
+        with open(fp, "rb") as f:
+            data = f.read()
+        self._send(200, {"Content-Type": ctype + "; charset=utf-8"}, data)
+
+    # ---------------- GET API ----------------
+    def route_get(self, path):
+        u, err = require_user(self)
+        if err:
+            return err
+        if path.startswith("/api/admin/"):
+            a, aerr = require_admin(self)
+            if aerr:
+                return aerr
+            return self.admin_get(path, a)
+        uid = u["id"]
+        conn = get_db()
+        try:
+            if path == "/api/me":
+                return json_resp(u)
+            if path == "/api/todos":
+                rows = conn.execute("SELECT * FROM todos WHERE user_id=? ORDER BY done, due_time", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/customers":
+                rows = conn.execute("SELECT * FROM customers WHERE user_id=? ORDER BY id DESC", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/tags":
+                rows = conn.execute("SELECT * FROM tags WHERE user_id=?", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/templates":
+                rows = conn.execute("SELECT * FROM templates WHERE user_id=? ORDER BY id DESC", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/exhibitions":
+                rows = conn.execute("SELECT * FROM exhibitions WHERE user_id=0 OR user_id=?", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/materials":
+                rows = conn.execute("SELECT * FROM materials WHERE user_id=0 OR user_id=?", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/email-logs":
+                rows = conn.execute("SELECT * FROM email_logs WHERE user_id=? ORDER BY id DESC", (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/settings":
+                s = load_settings(uid)
+                return json_resp(s)
+            if path.startswith("/api/email-logs/"):
+                lid = path.split("/")[-1]
+                row = conn.execute("SELECT * FROM email_logs WHERE id=? AND user_id=?", (lid, uid)).fetchone()
+                return json_resp(row_to_dict(row) if row else {})
+        finally:
+            conn.close()
+        return json_resp({"error": "not found"}, 404)
+
+    # ---------------- 管理员接口 ----------------
+    def admin_get(self, path, admin):
+        if path == "/api/admin/users":
+            conn = get_db()
+            rows = conn.execute("SELECT id,username,display_name,role,created_at FROM users ORDER BY id").fetchall()
+            conn.close()
+            return json_resp([row_to_dict(r) for r in rows])
+        return json_resp({"error": "not found"}, 404)
+
+    def admin_post(self, path, admin):
+        d = read_json_body(self)
+        conn = get_db()
+        try:
+            if path == "/api/admin/create-user":
+                uname = (d.get("username") or "").strip()
+                pw = d.get("password") or ""
+                role = d.get("role") or "member"
+                if not uname or not pw:
+                    return json_resp({"error": "用户名和密码必填"}, 400)
+                if conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone():
+                    return json_resp({"error": "用户名已存在"}, 409)
+                h, salt = hash_pass(pw)
+                conn.execute("INSERT INTO users (username,display_name,pass_hash,salt,created_at,role) VALUES (?,?,?,?,?,?)",
+                             (uname, d.get("display_name") or uname, h, salt, now_iso(), role))
+                uid = conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()["id"]
+                conn.execute("INSERT INTO settings (user_id,signature) VALUES (?,?)", (uid, "招展顾问"))
+                self.seed_demo_data(conn, uid)
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/admin/reset-password":
+                uid = d.get("user_id")
+                pw = d.get("new_password") or ""
+                if not pw:
+                    return json_resp({"error": "新密码必填"}, 400)
+                if int(uid) == admin["id"]:
+                    return json_resp({"error": "不能重置自己的密码，请在设置页修改"}, 400)
+                h, salt = hash_pass(pw)
+                conn.execute("UPDATE users SET pass_hash=?, salt=? WHERE id=?", (h, salt, uid))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/admin/update-role":
+                uid = d.get("user_id")
+                role = d.get("role")
+                if role not in ("member", "admin"):
+                    return json_resp({"error": "角色非法"}, 400)
+                if int(uid) == admin["id"]:
+                    return json_resp({"error": "不能修改自己的角色"}, 400)
+                conn.execute("UPDATE users SET role=? WHERE id=?", (role, uid))
+                conn.commit()
+                return json_resp({"ok": True})
+        finally:
+            conn.close()
+        return json_resp({"error": "not found"}, 404)
+
+    def admin_delete(self, path, admin):
+        if path.startswith("/api/admin/users/"):
+            tid = path.split("/")[-1]
+            try:
+                tid = int(tid)
+            except Exception:
+                return json_resp({"error": "bad id"}, 400)
+            if tid == admin["id"]:
+                return json_resp({"error": "不能删除自己的账号"}, 400)
+            conn = get_db()
+            try:
+                conn.execute("DELETE FROM users WHERE id=?", (tid,))
+                conn.execute("DELETE FROM settings WHERE user_id=?", (tid,))
+                conn.execute("DELETE FROM todos WHERE user_id=?", (tid,))
+                conn.execute("DELETE FROM customers WHERE user_id=?", (tid,))
+                conn.execute("DELETE FROM tags WHERE user_id=?", (tid,))
+                conn.execute("DELETE FROM templates WHERE user_id=?", (tid,))
+                conn.execute("DELETE FROM email_logs WHERE user_id=?", (tid,))
+                conn.commit()
+                return json_resp({"ok": True})
+            finally:
+                conn.close()
+        return json_resp({"error": "not found"}, 404)
+
+    # ---------------- 演示数据种子 ----------------
+    @staticmethod
+    def seed_demo_data(conn, uid):
+        """新用户注册后植入示例数据，进来即可直接体验（与纯前端版一致）。"""
+        now = now_iso()
+        # 预制标签
+        for name in ["预制菜客户", "调味品客户", "零食客户", "原料客户", "高意向", "待跟进"]:
+            try:
+                conn.execute("INSERT OR IGNORE INTO tags (user_id,name) VALUES (?,?)", (uid, name))
+            except Exception:
+                pass
+        # 示例客户
+        demo_cust = [
+            ("XX预制菜工厂", "王总", "wang@xx-food.com", "13800000001", "SIAL 巴黎食品展", "预制菜客户,高意向"),
+            ("YY调味品有限公司", "李总", "li@yy-seasoning.com", "13800000002", "SIAL 巴黎食品展", "调味品客户"),
+            ("ZZ休闲零食", "赵经理", "zhao@zz-snack.com", "13800000003", "越南食品展 VietFood", "零食客户,待跟进"),
+        ]
+        for c in demo_cust:
+            conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                         (uid, c[0], c[1], c[2], c[3], c[4], c[5], now))
+        # 示例待办（带绑定日期）
+        import datetime
+        base = datetime.date.today()
+        demo_todos = [
+            ("跟进XX预制菜厂参展意向", (base + datetime.timedelta(days=1)).isoformat(), "高"),
+            ("发送SIAL展位图给YY调味品", (base + datetime.timedelta(days=2)).isoformat(), "中"),
+            ("准备创新大奖申报材料", (base + datetime.timedelta(days=4)).isoformat(), "高"),
+            ("整理越南食品展客户名单", base.isoformat(), "低"),
+        ]
+        for t in demo_todos:
+            conn.execute("INSERT INTO todos (user_id,title,due_time,bind_date,priority,done,created_at) VALUES (?,?,?,?,?,?,?)",
+                         (uid, t[0], t[1] + " 18:00", t[1], t[2], 0, now))
+        # 示例邮件模板
+        conn.execute("""INSERT INTO templates (user_id,name,exhibition,customer_type,scene,tone,subject,body,signature,created_at)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (uid, "SIAL初次开发-预制菜", "SIAL 巴黎食品展", "预制菜", "1", "正式商务",
+                      "【{客户名称}】诚邀莅临 SIAL 巴黎食品展",
+                      "尊敬的{联系人姓名}（{客户名称}）：\n您好！我是「SIAL 巴黎食品展」中国区招展团队的{销售姓名}。\n\n结合贵司在预制菜领域的产品矩阵与出海布局，我们相信贵司非常契合本次展会的买家画像。诚挚邀请贵司莅临SIAL，与海外买家面对面洽谈。\n\n——{销售姓名}",
+                      "招展顾问", now))
+
+    # ---------------- POST API ----------------
+    def route_post(self, path):
+        # 注册 / 登录 不需要鉴权
+        if path == "/api/register":
+            d = read_json_body(self)
+            uname = (d.get("username") or "").strip()
+            pw = d.get("password") or ""
+            if not uname or not pw:
+                return json_resp({"error": "用户名和密码必填"}, 400)
+            conn = get_db()
+            if conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone():
+                conn.close()
+                return json_resp({"error": "用户名已存在"}, 409)
+            h, salt = hash_pass(pw)
+            conn.execute("INSERT INTO users (username,display_name,pass_hash,salt,created_at) VALUES (?,?,?,?,?)",
+                         (uname, d.get("display_name") or uname, h, salt, now_iso()))
+            uid = conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()["id"]
+            conn.execute("INSERT INTO settings (user_id,signature) VALUES (?,?)", (uid, "招展顾问"))
+            self.seed_demo_data(conn, uid)
+            conn.commit()
+            conn.close()
+            token = gen_token()
+            with SESS_LOCK:
+                SESSIONS[token] = uid
+            return json_resp({"token": token, "user": {"id": uid, "username": uname, "display_name": d.get("display_name") or uname, "role": "member"}})
+
+        if path == "/api/login":
+            d = read_json_body(self)
+            uname = (d.get("username") or "").strip()
+            pw = d.get("password") or ""
+            conn = get_db()
+            row = conn.execute("SELECT * FROM users WHERE username=?", (uname,)).fetchone()
+            conn.close()
+            if not row:
+                return json_resp({"error": "用户不存在"}, 404)
+            h, _ = hash_pass(pw, row["salt"])
+            if h != row["pass_hash"]:
+                return json_resp({"error": "密码错误"}, 401)
+            token = gen_token()
+            with SESS_LOCK:
+                SESSIONS[token] = row["id"]
+            return json_resp({"token": token, "user": {"id": row["id"], "username": row["username"], "display_name": row["display_name"], "role": row["role"]}})
+
+        if path.startswith("/api/admin/"):
+            a, aerr = require_admin(self)
+            if aerr:
+                return aerr
+            return self.admin_post(path, a)
+
+        u, err = require_user(self)
+        if err:
+            return err
+        uid = u["id"]
+        d = read_json_body(self)
+        conn = get_db()
+        try:
+            if path == "/api/todos":
+                conn.execute("INSERT INTO todos (user_id,title,due_time,bind_date,priority,customer_id,created_at) VALUES (?,?,?,?,?,?,?)",
+                             (uid, d.get("title",""), d.get("due_time"), d.get("bind_date"), d.get("priority","中"), d.get("customer_id"), now_iso()))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/tags":
+                name = (d.get("name") or "").strip()
+                if not name:
+                    return json_resp({"error":"标签名必填"},400)
+                try:
+                    conn.execute("INSERT INTO tags (user_id,name) VALUES (?,?)", (uid, name))
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    return json_resp({"error":"标签已存在"},409)
+                return json_resp({"ok": True})
+            if path == "/api/customers":
+                tags = d.get("tags")
+                if isinstance(tags, list):
+                    tags = ",".join(tags)
+                conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                             (uid, d.get("company"), d.get("contact"), d.get("email"), d.get("phone"), d.get("exhibition"), tags or "", now_iso()))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/customers/import":
+                text = d.get("csv") or ""
+                return self.import_csv(conn, uid, text)
+            if path == "/api/customers/upload-excel":
+                # 接收 base64 编码的文件数据（前端 FileReader → base64）
+                b64_data = d.get("file_base64") or d.get("file_data") or ""
+                filename = d.get("filename") or "data.xlsx"
+                if not b64_data:
+                    return json_resp({"error": "未上传文件"}, 400)
+                import base64 as b64mod
+                try:
+                    raw = b64mod.b64decode(b64_data)
+                except Exception:
+                    return json_resp({"error": "文件数据解码失败"}, 400)
+                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "xlsx"
+                try:
+                    result = self.parse_excel_file(raw, ext)
+                    if result.get("error"):
+                        return json_resp({"error": result["error"]}, 400)
+                    imp_result = self.import_parsed_data(conn, uid, result["rows"], result.get("headers", []))
+                    return json_resp({"ok": True, "imported": imp_result, "total_rows": len(result["rows"]),
+                                     "preview": result["preview"], "headers": result.get("headers", []),
+                                     "detected_columns": result.get("detected_columns", {})})
+                except Exception as e:
+                    return json_resp({"error": f"文件解析失败：{str(e)}"}, 400)
+            if path == "/api/templates":
+                conn.execute("INSERT INTO templates (user_id,name,exhibition,customer_type,scene,tone,subject,body,signature,attachment_ids,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                             (uid, d.get("name"), d.get("exhibition"), d.get("customer_type"), d.get("scene"), d.get("tone"),
+                              d.get("subject"), d.get("body"), d.get("signature"), d.get("attachment_ids",""), now_iso()))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/ai/generate":
+                subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
+                                            d.get("tone"), d.get("custom_input"), d.get("signature"))
+                return json_resp({"subject": subject, "body": body})
+            if path == "/api/exhibitions":
+                conn.execute("INSERT INTO exhibitions (user_id,name,city,date_text,note) VALUES (?,?,?,?,?)",
+                             (uid, d.get("name"), d.get("city"), d.get("date_text"), d.get("note")))
+                conn.commit()
+                new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                return json_resp({"ok": True, "id": new_id})
+            if path == "/api/materials":
+                # 接收文件内容（base64）或直接记录 URL；演示以名称 + 路径记录
+                name = d.get("name") or "资料"
+                ex_id = d.get("exhibition_id")
+                fpath = os.path.join(UPLOAD_DIR, f"{uid}_{int(datetime.datetime.now().timestamp())}_{name}")
+                content = d.get("content_b64")
+                if content:
+                    import base64
+                    with open(fpath, "wb") as f:
+                        f.write(base64.b64decode(content))
+                else:
+                    fpath = d.get("file_path") or ""
+                conn.execute("INSERT INTO materials (user_id,exhibition_id,name,file_path,created_at) VALUES (?,?,?,?,?)",
+                             (uid, ex_id, name, fpath, now_iso()))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/email/preview":
+                return self.preview_emails(conn, uid, u, d)
+            if path == "/api/email/send":
+                return self.send_emails(conn, uid, u, d)
+            if path == "/api/settings":
+                s = d
+                conn.execute("""INSERT OR REPLACE INTO settings
+                    (user_id,smtp_host,smtp_port,smtp_user,smtp_pass,from_email,from_name,default_interval,demo_mode,signature)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (uid, s.get("smtp_host"), s.get("smtp_port"), s.get("smtp_user"), s.get("smtp_pass"),
+                     s.get("from_email"), s.get("from_name"), s.get("default_interval",5),
+                     s.get("demo_mode",1),                      s.get("signature")))
+                conn.commit()
+                return json_resp({"ok": True})
+            if path == "/api/me/change-password":
+                old = d.get("old_password") or ""
+                new = d.get("new_password") or ""
+                if not new:
+                    return json_resp({"error": "新密码必填"}, 400)
+                row = conn.execute("SELECT pass_hash,salt FROM users WHERE id=?", (uid,)).fetchone()
+                oh, _ = hash_pass(old, row["salt"])
+                if oh != row["pass_hash"]:
+                    return json_resp({"error": "原密码不正确"}, 400)
+                h, salt = hash_pass(new)
+                conn.execute("UPDATE users SET pass_hash=?, salt=? WHERE id=?", (h, salt, uid))
+                conn.commit()
+                return json_resp({"ok": True})
+        finally:
+            conn.close()
+        return json_resp({"error": "not found"}, 404)
+
+    # ---------------- PATCH API ----------------
+    def route_patch(self, path):
+        u, err = require_user(self)
+        if err:
+            return err
+        uid = u["id"]
+        d = read_json_body(self)
+        conn = get_db()
+        try:
+            if path.startswith("/api/todos/"):
+                tid = path.split("/")[-1]
+                fields = []
+                vals = []
+                for k in ("title","due_time","bind_date","priority","customer_id","done"):
+                    if k in d:
+                        fields.append(f"{k}=?")
+                        vals.append(d[k])
+                if fields:
+                    conn.execute(f"UPDATE todos SET {','.join(fields)} WHERE id=? AND user_id=?", vals+[tid, uid])
+                    conn.commit()
+                return json_resp({"ok": True})
+            if path.startswith("/api/customers/"):
+                cid = path.split("/")[-1]
+                fields = []
+                vals = []
+                for k in ("company","contact","email","phone","exhibition","tags"):
+                    if k in d:
+                        v = d[k]
+                        if k == "tags" and isinstance(v, list):
+                            v = ",".join(v)
+                        fields.append(f"{k}=?")
+                        vals.append(v)
+                if fields:
+                    conn.execute(f"UPDATE customers SET {','.join(fields)} WHERE id=? AND user_id=?", vals+[cid, uid])
+                    conn.commit()
+                return json_resp({"ok": True})
+            if path.startswith("/api/templates/"):
+                tid = path.split("/")[-1]
+                fields = []
+                vals = []
+                for k in ("name","exhibition","customer_type","scene","tone","subject","body","signature","attachment_ids"):
+                    if k in d:
+                        fields.append(f"{k}=?")
+                        vals.append(d[k])
+                if fields:
+                    conn.execute(f"UPDATE templates SET {','.join(fields)} WHERE id=? AND user_id=?", vals+[tid, uid])
+                    conn.commit()
+                return json_resp({"ok": True})
+        finally:
+            conn.close()
+        return json_resp({"error": "not found"}, 404)
+
+    # ---------------- DELETE API ----------------
+    def route_delete(self, path):
+        u, err = require_user(self)
+        if err:
+            return err
+        if path.startswith("/api/admin/"):
+            a, aerr = require_admin(self)
+            if aerr:
+                return aerr
+            return self.admin_delete(path, a)
+        uid = u["id"]
+        conn = get_db()
+        try:
+            if path.startswith("/api/todos/"):
+                tid = path.split("/")[-1]
+                conn.execute("DELETE FROM todos WHERE id=? AND user_id=?", (tid, uid))
+            elif path.startswith("/api/customers/"):
+                cid = path.split("/")[-1]
+                conn.execute("DELETE FROM customers WHERE id=? AND user_id=?", (cid, uid))
+            elif path.startswith("/api/tags/"):
+                tid = path.split("/")[-1]
+                conn.execute("DELETE FROM tags WHERE id=? AND user_id=?", (tid, uid))
+            elif path.startswith("/api/templates/"):
+                tid = path.split("/")[-1]
+                conn.execute("DELETE FROM templates WHERE id=? AND user_id=?", (tid, uid))
+            elif path.startswith("/api/materials/"):
+                mid = path.split("/")[-1]
+                conn.execute("DELETE FROM materials WHERE id=? AND (user_id=? OR user_id=0)", (mid, uid))
+            else:
+                return json_resp({"error":"not found"},404)
+            conn.commit()
+            return json_resp({"ok": True})
+        finally:
+            conn.close()
+
+    # ---------------- 业务方法 ----------------
+    def import_csv(self, conn, uid, text):
+        try:
+            lines = text.strip().splitlines()
+            # 自动跳过非表头行（如"销售跟进情况表"等标题行）
+            while lines and not any(k in lines[0] for k in ["公司名称","客户公司","联系人","邮箱","序号"]):
+                lines.pop(0)
+            if not lines:
+                return json_resp({"error": "未找到有效的表头行"}, 400)
+            reader = csv.DictReader(io.StringIO("\n".join(lines)))
+            fields = reader.fieldnames or []
+            # 检测是否为「销售跟进情况表」模板（通过特征列名判断）
+            is_template = any("公司名称" in str(f) for f in fields)
+            count = 0
+            for row in reader:
+                if is_template:
+                    # 销售跟进情况表模板映射
+                    company = (row.get("公司名称（全称）*") or row.get("公司名称（全称）") or row.get("公司名称(全称)") or "").strip()
+                    if not company:
+                        company = (row.get("公司名称（简称）") or "").strip()
+                    if not company:
+                        continue
+                    contact = (row.get("联系人") or "").strip()
+                    phone = (row.get("联系电话") or "").strip()
+                    exhibition = (row.get("参展记录*") or row.get("参展记录") or row.get("参展记录*示例：24.5泰国食品展") or "").strip().split("\n")[0]
+                    tags = (row.get("客户分配标签属性") or "").strip()
+                    remark = (row.get("客户联系情况或跟踪记录*") or row.get("客户联系情况或跟踪记录") or row.get("其他备注（若有）") or "").strip()
+                    region = " ".join(filter(None, [row.get("省") or "", row.get("市") or "", row.get("县区") or ""])).strip()
+                    source = (row.get("客户来源") or "").strip()
+                    email = ""  # 该模板无邮箱列，需后续补充
+                else:
+                    # 标准格式
+                    company = (row.get("客户公司") or row.get("company") or row.get("公司名称") or "").strip()
+                    if not company:
+                        continue
+                    contact = (row.get("联系人") or row.get("contact") or "").strip()
+                    phone = (row.get("手机号") or row.get("phone") or row.get("联系电话") or "").strip()
+                    exhibition = (row.get("意向展会") or row.get("exhibition") or row.get("参展记录") or "").strip()
+                    tags = (row.get("客户标签") or row.get("tags") or row.get("客户分配标签属性") or "").strip()
+                    email = (row.get("邮箱") or row.get("email") or "").strip()
+                    remark = ""
+                    region = ""
+                    source = ""
+                conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,remark,region,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                             (uid, company, contact, email, phone, exhibition, tags, remark, region, source, now_iso()))
+                count += 1
+            conn.commit()
+            return json_resp({"ok": True, "imported": count, "template_mode": is_template})
+        except Exception as e:
+            return json_resp({"error": str(e)}, 400)
+
+    # ---------- Excel 文件上传解析（openpyxl 可靠解析） ----------
+    @staticmethod
+    def parse_excel_file(raw_data, ext):
+        """用 openpyxl 解析 Excel/CSV 文件，返回 {rows, headers, preview, detected_columns, error?}"""
+        import tempfile, csv as csv_mod
+        # 写临时文件让 openpyxl 读取
+        suffix = "." + ("xlsx" if ext in ("xlsx", "xls") else "csv")
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw_data)
+            tmp_path = tmp.name
+        try:
+            if ext == "csv":
+                rows = []
+                with open(tmp_path, "r", encoding="utf-8-sig") as f:
+                    reader = csv_mod.reader(f)
+                    for row in reader:
+                        rows.append([str(c).strip() for c in row])
+                if not rows:
+                    return {"error": "CSV 文件为空"}
+                headers = rows[0]
+                data_rows = rows[1:]
+            elif ext == "xlsx":
+                import openpyxl
+                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                ws = wb.active
+                raw_rows = list(ws.iter_rows(values_only=True))
+                if not raw_rows:
+                    return {"error": "Excel 文件为空"}
+                headers = [str(c).strip() if c else "" for c in raw_rows[0]]
+                data_rows = [[str(c).strip() if c else "" for c in r] for r in raw_rows[1:]]
+            elif ext == "xls":
+                return {"error": ".xls 旧格式不支持，请另存为 .xlsx 或 .csv"}
+            else:
+                return {"error": f"不支持的文件格式：.{ext}"}
+            # 过滤掉全空的行和标题行（如"销售跟进情况表"）
+            real_data = []
+            for r in data_rows:
+                if any(v.strip() for v in r):
+                    real_data.append(r)
+            # 模糊列名匹配：找到公司/联系人/邮箱列索引
+            detected = Handler.fuzzy_match_columns(headers)
+            preview = []
+            for r in real_data[:10]:
+                preview.append({k: (r[v] if v < len(r) else "") for k, v in detected.items()})
+            return {"rows": real_data, "headers": headers, "preview": preview,
+                    "detected_columns": detected}
+        finally:
+            os.unlink(tmp_path)
+
+    @staticmethod
+    def fuzzy_match_columns(headers):
+        """模糊匹配列名，返回 {company: idx, contact: idx, email: idx, phone: idx, ...}"""
+        col_map = {}
+        for i, h in enumerate(headers):
+            h_low = h.lower().strip()
+            # 公司名
+            if not col_map.get("company") and any(k in h for k in ["公司名称", "公司名", "企业名称", "单位名称", "客户公司"]):
+                col_map["company"] = i
+            if not col_map.get("company") and any(k in h_low for k in ["company", "企业"]):
+                col_map["company"] = i
+            # 联系人/姓名
+            if not col_map.get("contact") and any(k in h for k in ["联系人", "联系姓名", "姓名", "负责人", "客户姓名"]):
+                col_map["contact"] = i
+            if not col_map.get("contact") and any(k in h_low for k in ["contact", "name", "联系人"]):
+                col_map["contact"] = i
+            # 邮箱
+            if not col_map.get("email") and any(k in h for k in ["邮箱", "电子邮箱", "Email", "E-mail", "邮件"]):
+                col_map["email"] = i
+            if not col_map.get("email") and "email" in h_low or "mail" in h_low:
+                col_map["email"] = i
+            # 电话
+            if not col_map.get("phone") and any(k in h for k in ["联系电话", "手机号", "电话", "手机"]):
+                col_map["phone"] = i
+            if not col_map.get("phone") and any(k in h_low for k in ["phone", "tel", "mobile"]):
+                col_map["phone"] = i
+            # 展会/意向
+            if not col_map.get("exhibition") and any(k in h for k in ["参展记录", "意向展会", "展会", "参展"]):
+                col_map["exhibition"] = i
+            # 标签
+            if not col_map.get("tags") and any(k in h for k in ["标签", "分类", "属性"]):
+                col_map["tags"] = i
+            # 备注
+            if not col_map.get("remark") and any(k in h for k in ["备注", "跟踪记录", "说明", "情况"]):
+                col_map["remark"] = i
+        # 兜底：如果只有一列且含"公司"，当 company
+        if not col_map.get("company") and len(headers) == 1:
+            col_map["company"] = 0
+        return col_map
+
+    def import_parsed_data(self, conn, uid, rows, headers):
+        """根据模糊匹配的列，将已解析的行数据导入数据库"""
+        detected = self.fuzzy_match_columns(headers)
+        count = 0
+        for row in rows:
+            def gv(key):
+                idx = detected.get(key)
+                return (row[idx].strip() if idx is not None and idx < len(row) else "")
+            company = gv("company")
+            if not company:
+                continue
+            conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,remark,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (uid, company, gv("contact"), gv("email"), gv("phone"),
+                          gv("exhibition"), gv("tags"), gv("remark"), now_iso()))
+            count += 1
+        conn.commit()
+        return count
+
+    def preview_emails(self, conn, uid, u, d):
+        """根据模板内容 + 客户来源，渲染个性化邮件预览"""
+        subject_tpl = d.get("subject", "")
+        body_tpl = d.get("body", "")
+        # 客户来源
+        customer_ids = d.get("customer_ids") or []
+        tag_filter = (d.get("tag_filter") or "").strip()
+        csv_text = d.get("csv")
+        customers = []
+        if customer_ids:
+            for cid in customer_ids:
+                row = conn.execute("SELECT * FROM customers WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+                if row:
+                    customers.append(row_to_dict(row))
+        if csv_text:
+            reader = csv.DictReader(io.StringIO(csv_text))
+            for row in reader:
+                customers.append({
+                    "company": (row.get("客户公司") or row.get("company") or "").strip(),
+                    "contact": (row.get("联系人") or row.get("contact") or "").strip(),
+                    "email": (row.get("邮箱") or row.get("email") or "").strip(),
+                    "phone": (row.get("手机号") or row.get("phone") or "").strip(),
+                    "exhibition": (row.get("意向展会") or row.get("exhibition") or "").strip(),
+                })
+        if tag_filter:
+            customers = [c for c in customers if tag_filter in (c.get("tags") or "").split(",")]
+        # 去重 by email
+        seen = set(); uniq = []
+        for c in customers:
+            e = (c.get("email") or "").strip().lower()
+            if e and e in seen:
+                continue
+            seen.add(e); uniq.append(c)
+        sales_name = load_settings(uid).get("signature") or u.get("display_name") or ""
+        rendered = []
+        for c in uniq:
+            rendered.append({
+                "company": c.get("company"),
+                "contact": c.get("contact"),
+                "email": c.get("email"),
+                "subject": personalize(subject_tpl, c, sales_name),
+                "body": personalize(body_tpl, c, sales_name),
+            })
+        return json_resp({"count": len(rendered), "items": rendered})
+
+    def send_emails(self, conn, uid, u, d):
+        items = d.get("items") or []
+        cc = d.get("cc") or []
+        bcc = d.get("bcc") or []
+        interval = int(d.get("interval") or 5)
+        attachment_ids = d.get("attachment_ids") or []
+        settings = load_settings(uid)
+        sales_name = settings.get("signature") or u.get("display_name") or ""
+        # 附件
+        attachments = []
+        if attachment_ids:
+            for aid in attachment_ids:
+                row = conn.execute("SELECT * FROM materials WHERE id=? AND (user_id=? OR user_id=0)", (aid, uid)).fetchone()
+                if row:
+                    attachments.append({"name": row["name"], "file_path": row["file_path"]})
+        exhibition = d.get("exhibition") or ""
+        template_name = d.get("template_name") or ""
+        results = []
+        for it in items:
+            c = {"company": it.get("company"), "contact": it.get("contact"), "email": it.get("email")}
+            subject = personalize(it.get("subject",""), c, sales_name)
+            body = personalize(it.get("body",""), c, sales_name)
+            to = (it.get("email") or "").strip()
+            status, error = "failed", "缺少收件邮箱"
+            if to:
+                status, error = send_one_email(uid, to, subject, body, settings, attachments, cc, bcc)
+            conn.execute("INSERT INTO email_logs (user_id,exhibition,template_name,customer_company,contact,email,subject,body,status,error,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (uid, exhibition, template_name, it.get("company"), it.get("contact"), to, subject, body, status, error, now_iso()))
+            results.append({"email": to, "status": status})
+            if interval and to:
+                threading.Event().wait(interval)
+        conn.commit()
+        return json_resp({"ok": True, "results": results, "demo_mode": bool(settings.get("demo_mode"))})
+
+
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+
+def main():
+    init_db()
+    port = int(os.environ.get("PORT", 8000))
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"✅ 销售邮件发送工作台已启动： http://127.0.0.1:{port}")
+    print(f"   数据库： {DB_PATH}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+
+if __name__ == "__main__":
+    main()

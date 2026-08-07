@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>销售邮件发送工作台</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- 登录/注册 -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-badge">📧</div>
+    <div class="auth-logo">销售邮件发送工作台</div>
+    <div class="auth-sub">海外食品展会招展 · 智能邮件工作台</div>
+    <div class="auth-tabs">
+      <span class="active" data-tab="login">登录</span>
+      <span data-tab="register">注册新空间</span>
+    </div>
+    <input id="auth-user" class="inp" placeholder="用户名 / 工号">
+    <input id="auth-name" class="inp" placeholder="显示名称（注册时填）" style="display:none">
+    <input id="auth-pass" class="inp" type="password" placeholder="密码">
+    <button id="auth-btn" class="btn btn-primary btn-block">登 录</button>
+    <div id="auth-msg" class="auth-msg"></div>
+    <div class="auth-feats">
+      <span class="auth-feat">🤖 AI 一键生成</span>
+      <span class="auth-feat">📤 批量发送</span>
+      <span class="auth-feat">👥 独立空间</span>
+    </div>
+    <div class="auth-hint">每位销售使用独立账号，数据互不可见（独立空间）。</div>
+  </div>
+</div>
+
+<!-- 主应用 -->
+<div id="app" class="app" style="display:none">
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="topbar-left">📧 <b>销售邮件发送工作台</b></div>
+    <div class="topbar-search"><input id="global-search" class="inp" placeholder="搜索客户 / 模板 / 展会…"></div>
+    <div class="topbar-right">
+      <span id="bell" class="bell" title="到期提醒">🔔<span id="bell-badge" class="badge" style="display:none">0</span></span>
+      <span id="cur-user" class="cur-user"></span>
+      <button id="logout-btn" class="btn btn-ghost">退出</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- 左侧导航 -->
+    <nav class="sidebar">
+      <div class="nav-group">
+        <div class="nav-item active" data-view="home"><span class="ico">🏠</span>首页工作台</div>
+        <div class="nav-sub">
+          <div class="nav-leaf" data-view="home" data-sub="todos">待办事项提醒</div>
+          <div class="nav-leaf" data-view="home" data-sub="calendar">悬浮日历</div>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-item" data-view="ai"><span class="ico">🤖</span>AI 邮件模板中心</div>
+        <div class="nav-sub">
+          <div class="nav-leaf" data-view="ai" data-sub="gen">AI 生成邮件</div>
+          <div class="nav-leaf" data-view="ai" data-sub="tpl">我的邮件模板库</div>
+          <div class="nav-leaf" data-view="ai" data-sub="logs">邮件记录 / 发送日志</div>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-item" data-view="cust"><span class="ico">👥</span>客户管理</div>
+        <div class="nav-sub">
+          <div class="nav-leaf" data-view="cust" data-sub="list">客户列表</div>
+          <div class="nav-leaf" data-view="cust" data-sub="tags">客户标签管理</div>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-item" data-view="expo"><span class="ico">📁</span>展会资料库</div>
+        <div class="nav-sub">
+          <div class="nav-leaf" data-view="expo" data-sub="mat">展会资料附件</div>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-item" data-view="set"><span class="ico">⚙️</span>系统设置</div>
+      </div>
+      <div class="nav-group admin-only" id="nav-admin" style="display:none">
+        <div class="nav-item" data-view="admin"><span class="ico">🛡️</span>管理员中心</div>
+      </div>
+    </nav>
+
+    <!-- 内容区 -->
+    <main id="content" class="content"></main>
+  </div>
+</div>
+
+<!-- 通用弹窗容器 -->
+<div id="modal-root"></div>
+<div id="toast" class="toast"></div>
+
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script src="js/local.js"></script>
+</body>
+</html>
