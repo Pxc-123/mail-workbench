@@ -800,17 +800,18 @@ function importModal() {
           file_base64: b64, filename: pendingFile.name
         });
         if (r.ok) {
-          let msg = "✅ 成功导入 " + r.imported + " 位客户";
-          if (r.detected_columns) {
+          const d = r.data || {};
+          let msg = "✅ 成功导入 " + (d.imported ?? 0) + " 位客户";
+          if (d.detected_columns) {
             const c = [];
-            if (r.detected_columns.company !== undefined) c.push("公司名✓"); else c.push("公司名✗");
-            if (r.detected_columns.contact !== undefined) c.push("联系人✓"); else c.push("联系人✗");
-            if (r.detected_columns.email !== undefined) c.push("邮箱✓"); else c.push("邮箱✗（需手动补充）");
-            if (r.detected_columns.phone !== undefined) c.push("电话✓");
+            if (d.detected_columns.company !== undefined) c.push("公司名✓"); else c.push("公司名✗");
+            if (d.detected_columns.contact !== undefined) c.push("联系人✓"); else c.push("联系人✗");
+            if (d.detected_columns.email !== undefined) c.push("邮箱✓"); else c.push("邮箱✗（需手动补充）");
+            if (d.detected_columns.phone !== undefined) c.push("电话✓");
             msg += "\n📋 识别列：" + c.join(" | ");
           }
-          if (r.preview && r.preview.length > 0)
-            msg += "\n前几条：" + r.preview.slice(0,3).map(p => p.company || "(无公司名)").join(", ");
+          if (d.preview && d.preview.length > 0)
+            msg += "\n前几条：" + d.preview.slice(0,3).map(p => p.company || "(无公司名)").join(", ");
           closeModal(); toast(msg); render();
         } else { toast("❌ 导入失败：" + (r.error || "")); }
       } catch(err) { toast("❌ 上传异常：" + err.message); }
