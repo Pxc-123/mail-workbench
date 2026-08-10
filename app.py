@@ -1117,9 +1117,10 @@ class Handler(BaseHTTPRequestHandler):
                 return {"error": "文件只有表头没有数据行"}
             # 模糊列名匹配：找到公司/联系人/邮箱列索引
             detected = Handler.fuzzy_match_columns(headers)
+            _data_keys = ["company","contact","email","phone","exhibition","tags","remark"]
             preview = []
             for r in real_data[:10]:
-                preview.append({k: (r[v] if v < len(r) else "") for k, v in detected.items()})
+                preview.append({k: (r[v] if isinstance(v,int) and v < len(r) else "") for k in _data_keys for v in [detected.get(k)]})
             return {"rows": real_data, "headers": headers, "preview": preview,
                     "detected_columns": detected}
         finally:
