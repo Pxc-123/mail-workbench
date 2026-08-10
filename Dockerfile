@@ -16,8 +16,8 @@ COPY frontend /app/frontend
 # 生产环境请将 DB_PATH 指向云托管挂载的持久卷，避免容器重启丢数据
 COPY workbench.db /app/workbench.db
 
-# CloudBase 云托管默认转发到容器监听端口，这里用 80
-ENV PORT=80
-EXPOSE 80
+# CloudBase 云托管服务端口（必须与控制台配置的「服务端口」一致）
+ENV PORT=8080
+EXPOSE 8080
 
 CMD ["python", "app.py"]
