@@ -80,8 +80,6 @@ function showAuth() {
     $("#auth-msg").textContent = "";
   });
   $("#auth-btn").onclick = async () => {
-    // 调试：确认 onclick 是否被触发
-    alert("按钮被点击了! 即将尝试登录...");
     try {
       const username = $("#auth-user").value.trim();
       const password = $("#auth-pass").value;
