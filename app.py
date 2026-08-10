@@ -1126,34 +1126,48 @@ class Handler(BaseHTTPRequestHandler):
             os.unlink(tmp_path)
 
     @staticmethod
+    def _clean_header(h):
+        """清洗表头：去掉括号内容、标点、空格，用于模糊比对"""
+        import re
+        s = h.strip()
+        # 去掉中文/英文括号及其中内容，如 "公司名称（全称）" → "公司名称"
+        s = re.sub(r'[（(][^）)]*[）)]', '', s)
+        # 去掉末尾的 * 号等标记
+        s = s.rstrip('* \t')
+        return s.strip()
+
+    @staticmethod
     def fuzzy_match_columns(headers):
         """模糊匹配列名，返回 {company: idx, contact: idx, email: idx, phone: idx, ...}"""
         col_map = {}
         for i, h in enumerate(headers):
-            h_low = h.lower().strip()
             h_raw = h.strip()
+            h_clean = Handler._clean_header(h)
+            h_low = h_clean.lower()
+
             # 公司名（放宽匹配）
-            if not col_map.get("company") and any(k in h_raw for k in [
+            if not col_map.get("company") and any(k in h_clean for k in [
                 "公司名称", "公司名", "企业名称", "单位名称", "客户公司",
-                "公司", "企业", "供应商", "厂商", "品牌", "参展商"
+                "公司", "企业", "供应商", "厂商", "品牌", "参展商",
+                "公司全称", "全称"
             ]):
                 col_map["company"] = i
             if not col_map.get("company") and any(k in h_low for k in [
-                "company", "企业", "firm", "org", "supplier", "vendor"
+                "company", "firm", "org", "supplier", "vendor"
             ]):
                 col_map["company"] = i
             # 联系人/姓名
-            if not col_map.get("contact") and any(k in h_raw for k in [
+            if not col_map.get("contact") and any(k in h_clean for k in [
                 "联系人", "联系姓名", "姓名", "负责人", "客户姓名",
                 "联系人姓名", "对接人", "采购负责人", "决策人"
             ]):
                 col_map["contact"] = i
             if not col_map.get("contact") and any(k in h_low for k in [
-                "contact", "name", "person", "联系人"
+                "contact", "name", "person"
             ]):
                 col_map["contact"] = i
             # 邮箱
-            if not col_map.get("email") and any(k in h_raw for k in [
+            if not col_map.get("email") and any(k in h_clean for k in [
                 "邮箱", "电子邮箱", "Email", "E-mail", "邮件",
                 "邮箱地址", "E-mail地址"
             ]):
@@ -1161,24 +1175,24 @@ class Handler(BaseHTTPRequestHandler):
             if not col_map.get("email") and ("email" in h_low or "mail" in h_low or "e_mail" in h_low):
                 col_map["email"] = i
             # 电话
-            if not col_map.get("phone") and any(k in h_raw for k in [
+            if not col_map.get("phone") and any(k in h_clean for k in [
                 "联系电话", "手机号", "电话", "手机", "手机号码",
-                "联系方式", "电话号码", "Tel"
+                "联系方式", "电话号码", "Tel", "联系电话"
             ]):
                 col_map["phone"] = i
             if not col_map.get("phone") and any(k in h_low for k in ["phone", "tel", "mobile"]):
                 col_map["phone"] = i
             # 展会/意向
-            if not col_map.get("exhibition") and any(k in h_raw for k in [
+            if not col_map.get("exhibition") and any(k in h_clean for k in [
                 "参展记录", "意向展会", "展会", "参展", "目标展会",
                 "感兴趣展会", "参展意向"
             ]):
                 col_map["exhibition"] = i
             # 标签
-            if not col_map.get("tags") and any(k in h_raw for k in ["标签", "分类", "属性", "类别", "行业"]):
+            if not col_map.get("tags") and any(k in h_clean for k in ["标签", "分类", "属性", "类别", "行业"]):
                 col_map["tags"] = i
             # 备注
-            if not col_map.get("remark") and any(k in h_raw for k in ["备注", "跟踪记录", "说明", "情况", "备注信息", "描述"]):
+            if not col_map.get("remark") and any(k in h_clean for k in ["备注", "跟踪记录", "说明", "情况", "备注信息", "描述", "财务备注"]):
                 col_map["remark"] = i
         # 兜底1：如果只有一列且含"公司"，当 company
         if not col_map.get("company") and len(headers) == 1:
@@ -1187,6 +1201,8 @@ class Handler(BaseHTTPRequestHandler):
         if not col_map.get("company") and len(headers) > 0:
             col_map["company"] = 0
             col_map["_fallback_company"] = True
+        # 记录原始表头用于诊断
+        col_map["_raw_headers"] = headers
         return col_map
 
     def import_parsed_data(self, conn, uid, rows, headers):
