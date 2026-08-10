@@ -1192,7 +1192,7 @@ class Handler(BaseHTTPRequestHandler):
             if not col_map.get("tags") and any(k in h_clean for k in ["标签", "分类", "属性", "类别", "行业"]):
                 col_map["tags"] = i
             # 备注
-            if not col_map.get("remark") and any(k in h_clean for k in ["备注", "跟踪记录", "说明", "情况", "备注信息", "描述", "财务备注"]):
+            if not col_map.get("remark") and any(k in h_clean for k in ["备注", "跟踪记录", "说明", "情况", "备注信息", "描述"]):
                 col_map["remark"] = i
         # 兜底1：如果只有一列且含"公司"，当 company
         if not col_map.get("company") and len(headers) == 1:

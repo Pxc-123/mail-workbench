@@ -724,9 +724,11 @@ async function renderCustomerTable(target) {
     tr.appendChild(el("td", {}, c.exhibition || "-"));
     tr.appendChild(el("td", {}, (c.tags || "").split(",").filter(Boolean).map(tg => `<span class="pill">${esc(tg)}</span>`).join("") || "-"));
     const td = el("td");
+    const editBtn = el("button", { class: "btn btn-sm" }, "编辑");
+    editBtn.onclick = () => editCustomerModal(c, target);
     const del = el("button", { class: "btn btn-sm btn-danger" }, "删除");
     del.onclick = async () => { await api("DELETE", "/api/customers/" + c.id); renderCustomerTable(target); };
-    td.appendChild(del); tr.appendChild(td);
+    td.appendChild(editBtn); td.appendChild(del); tr.appendChild(td);
     t.appendChild(tr);
   });
   target.appendChild(t);
@@ -744,6 +746,21 @@ function addCustomerModal() {
     if (!$("#c-company").value.trim()) { toast("客户公司必填"); return; }
     await api("POST", "/api/customers", { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, tags: $("#c-tags").value });
     closeModal(); toast("客户已添加"); render();
+  };
+}
+function editCustomerModal(c, target) {
+  const html = `<div class="cfg-row"><label>客户公司 *</label><input id="c-company" class="inp" value="${esc(c.company || "")}"></div>
+    <div class="cfg-row"><label>联系人</label><input id="c-contact" class="inp" value="${esc(c.contact || "")}"></div>
+    <div class="cfg-row"><label>邮箱</label><input id="c-email" class="inp" value="${esc(c.email || "")}"></div>
+    <div class="cfg-row"><label>手机号</label><input id="c-phone" class="inp" value="${esc(c.phone || "")}"></div>
+    <div class="cfg-row"><label>意向展会</label><input id="c-ex" class="inp" value="${esc(c.exhibition || "")}"></div>
+    <div class="cfg-row"><label>客户标签（逗号分隔）</label><input id="c-tags" class="inp" placeholder="预制菜客户,高意向" value="${esc(c.tags || "")}"></div>
+    <button class="btn btn-primary btn-block" id="c-save">保存修改</button>`;
+  openModal("编辑客户", html);
+  $("#c-save").onclick = async () => {
+    if (!$("#c-company").value.trim()) { toast("客户公司必填"); return; }
+    await api("PUT", "/api/customers/" + c.id, { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, tags: $("#c-tags").value });
+    closeModal(); toast("客户已更新"); if (target) renderCustomerTable(target); else render();
   };
 }
 function importModal() {
