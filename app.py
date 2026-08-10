@@ -1290,16 +1290,24 @@ class Handler(BaseHTTPRequestHandler):
         detected = self.fuzzy_match_columns(headers)
         count = 0
         skipped_empty = 0
+        skipped_junk = 0  # 无意义公司名（如"序号"、"编号"）
         sample_skipped = []  # 记录前3条被跳过的行(用于诊断)
+        # 无意义公司名关键词
+        _junk_keywords = ("序号", "编号", "no.", "no", "#", "id", "行号")
         for row in rows:
             def gv(key):
                 idx = detected.get(key)
                 return (row[idx].strip() if idx is not None and idx < len(row) else "")
-            company = gv("company")
+            company = gv("company").strip()
             if not company:
                 skipped_empty += 1
                 if len(sample_skipped) < 3:
                     sample_skipped.append(row[:min(4, len(row))])
+                continue
+            # 过滤无意义公司名：纯数字、或包含序号/编号等关键词
+            company_low = company.lower()
+            if company_low in _junk_keywords or any(kw in company_low for kw in _junk_keywords) or company.isdigit():
+                skipped_junk += 1
                 continue
             conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,remark,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                          (uid, company, gv("contact"), gv("email"), gv("phone"),
@@ -1314,6 +1322,7 @@ class Handler(BaseHTTPRequestHandler):
                 "detected_columns": detected,
                 "total_rows": len(rows),
                 "skipped_empty_company": skipped_empty,
+                "skipped_junk_company": skipped_junk,
                 "sample_skipped_rows": sample_skipped,
             }
         return result
@@ -1381,20 +1390,32 @@ class Handler(BaseHTTPRequestHandler):
         exhibition = d.get("exhibition") or ""
         template_name = d.get("template_name") or ""
         results = []
-        for it in items:
-            c = {"company": it.get("company"), "contact": it.get("contact"), "email": it.get("email")}
-            subject = personalize(it.get("subject",""), c, sales_name)
-            body = personalize(it.get("body",""), c, sales_name)
-            to = (it.get("email") or "").strip()
-            status, error = "failed", "缺少收件邮箱"
-            if to:
-                status, error = send_one_email(uid, to, subject, body, settings, attachments, cc, bcc)
-            conn.execute("INSERT INTO email_logs (user_id,exhibition,template_name,customer_company,contact,email,subject,body,status,error,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (uid, exhibition, template_name, it.get("company"), it.get("contact"), to, subject, body, status, error, now_iso()))
-            results.append({"email": to, "status": status})
-            if interval and to:
-                threading.Event().wait(interval)
-        conn.commit()
+        try:
+            for it in items:
+                c = {"company": it.get("company"), "contact": it.get("contact"), "email": it.get("email")}
+                subject = personalize(it.get("subject",""), c, sales_name)
+                body = personalize(it.get("body",""), c, sales_name)
+                to = (it.get("email") or "").strip()
+                status, error = "failed", "缺少收件邮箱"
+                if to:
+                    try:
+                        status, error = send_one_email(uid, to, subject, body, settings, attachments, cc, bcc)
+                    except Exception as e:
+                        status, error = "failed", f"发送异常: {str(e)}"
+                # 每封邮件立即写日志 + commit，防止超时丢失
+                try:
+                    conn.execute("INSERT INTO email_logs (user_id,exhibition,template_name,customer_company,contact,email,subject,body,status,error,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                 (uid, exhibition, template_name, it.get("company"), it.get("contact"), to, subject, body, status, error, now_iso()))
+                    conn.commit()
+                except Exception as log_err:
+                    pass
+                results.append({"email": to, "status": status})
+                if interval and to:
+                    threading.Event().wait(interval)
+        except Exception as outer_e:
+            try: conn.commit()
+            except: pass
+            return json_resp({"ok": True, "results": results, "demo_mode": bool(settings.get("demo_mode")), "warning": f"发送中断: {str(outer_e)}"})
         return json_resp({"ok": True, "results": results, "demo_mode": bool(settings.get("demo_mode"))})
 
 
