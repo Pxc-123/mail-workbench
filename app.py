@@ -266,6 +266,73 @@ TYPE_INTRO = {
     "综合食品企业": "贵司综合食品业务的多品类出海机会",
 }
 
+# 展会特色数据(用于生成差异化文案)
+EXHIBITION_PROFILES = {
+    "SIAL 巴黎食品展": {
+        "city": "法国巴黎", "date_hint": "2026年10月", "scale": "全球最大食品展之一，70+国家参展商，30万+专业观众",
+        "highlights": ["欧洲买家集中度最高", "新品发布首选平台", "OEM/ODM对接效率极高"],
+        "openings": [
+            "作为全球食品行业的风向标，SIAL Paris 每年都是中国食品企业进入欧洲市场的黄金跳板。",
+            "SIAL Paris 2026 即将开幕——这是中国预制菜/调味品企业触达欧洲采购决策者的最佳窗口期。",
+            "每届 SIAL 都有超过 70% 的参观者拥有直接采购权，这正是贵司需要的精准买家群体。",
+        ],
+    },
+    "越南国际食品展": {
+        "city": "越南胡志明市", "date_hint": "2026年8月", "scale": "东南亚增长最快食品展，覆盖东盟10国+日韩澳新",
+        "highlights": ["RCEP红利直接受益", "越南制造+出口双需求", "中企入驻成本低于欧美"],
+        "openings": [
+            "越南食品市场正以年均12%的速度增长，而 VietFood 是切入这一市场的最短路径。",
+            "RCEP 生效后，越南已成为中国食品企业布局东南亚的桥头堡——VietFood 正是入场券。",
+            "胡志明市作为越南经济中心，其食品加工产业对华合作意愿强烈，正是拓展良机。",
+        ],
+    },
+    "德国 ANUGA 食品展": {
+        "city": "德国科隆", "date_hint": "2026年10月", "scale": "世界最大食品饮料展，每两年一届，180+国家参与",
+        "highlights": ["全球食品行业奥林匹克", "B2B成交额行业第一", "趋势发布权威平台"],
+        "openings": [
+            "ANUGA 被誉为食品行业的'奥林匹克'——每两年一次，错过就要再等两年。",
+            "科隆 ANUGA 是全球唯一能同时见到 180+ 国家顶级买家的展会，对出海战略意义非凡。",
+            "往届 ANUGA 中国展区一位难求，今年我们提前锁定了一批优质展位资源。",
+        ],
+    },
+    "日本 FOODEX": {
+        "city": "日本千叶", "date_hint": "2027年3月", "scale": "亚洲最大食品展之一，日本7万+专业买家到场",
+        "highlights": ["日本食品安全标准最高", "单价/利润空间最优", "健康/功能性食品需求爆发"],
+        "openings": [
+            "日本市场以高门槛、高利润著称——FOODEX Japan 是打开这扇门的钥匙。",
+            "日本消费者对海外优质食品的需求持续攀升，尤其是健康、功能性品类。",
+            "FOODEX Japan 的买家质量在亚洲首屈一指，单客订单价值远超其他区域。",
+        ],
+    },
+    "泰国 THAIFEX": {
+        "city": "泰国曼谷", "date_hint": "2026年5月", "scale": "东盟核心食品展，连接南亚+中东+非洲买家",
+        "highlights": ["东盟美食之都", "清真认证枢纽", "酒店餐饮业采购集中"],
+        "openings": [
+            "曼谷 THAIFEX 已成为连接东盟、南亚乃至中东食品买家的核心枢纽。",
+            "泰国作为东盟美食中心，其辐射力可直达迪拜、印度等新兴市场。",
+            "THAIFEX 独特的'酒店+零售'双渠道买家结构，让参展效果倍增。",
+        ],
+    },
+}
+
+# 差异化开场白池(随机选取避免雷同)
+OPENING_VARIANTS = [
+    "您好！希望这封邮件没有打扰您的工作节奏。",
+    "您好！感谢您抽出时间阅读这封信。",
+    "您好！冒昧来信，是觉得以下信息可能对贵司有价值。",
+    "您好！在这个信息过载的时代，我只说重点。",
+    "您好！直接切入正题——有一个机会想和您同步。",
+]
+
+# 差异化结尾池
+CLOSING_VARIANTS = [
+    "如需进一步了解展会详情或展位方案，随时欢迎联系我。期待您的回复！",
+    "我会在本周内跟进您的反馈。如有任何疑问，请随时告知。",
+    "附件中包含本次展会的详细资料供您参考。期待与贵司在展会现场相见！",
+    "如方便的话，我们可以安排一个简短的电话沟通具体需求。",
+    "无论最终是否参展，都感谢您的时间。祝生意兴隆！",
+]
+
 def build_email(exhibition, customer_type, scene, tone, custom_input, signature):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
@@ -274,50 +341,84 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
     intro = TYPE_INTRO.get(ctype, "贵司在食品领域的产品与渠道优势")
     news = (custom_input or "").strip()
 
+    # 获取展会特色数据(用于生成差异化文案)
+    profile = EXHIBITION_PROFILES.get(ex, {})
+    ex_city = profile.get("city", "")
+    ex_date = profile.get("date_hint", "")
+    ex_scale = profile.get("scale", "")
+    ex_highlights = profile.get("highlights", [])
+    # 随机选取开场白和结尾
+    opening = random.choice(OPENING_VARIANTS) if profile else OPENING_VARIANTS[0]
+    closing = random.choice(CLOSING_VARIANTS)
+
     # 称呼占位（发送时按客户替换）
     salutation = "尊敬的 {联系人姓名}（{客户名称}）："
 
+    # 构建展会信息段落(根据是否有profile决定丰富程度)
+    if profile:
+        ex_info_para = (
+            f"【{ex}】\n"
+            f"📍 举办地：{ex_city}\n"
+            f"📅 展期：{ex_date}\n"
+            f"📊 规模：{ex_scale}\n"
+            f"✨ 亮点：{'、'.join(random.sample(ex_highlights, min(2, len(ex_highlights))))}"
+        )
+    else:
+        ex_info_para = f"【{ex}】"
+
     scene_body = {
         "1": (
-            f"您好！我是「{ex}」中国区招展团队的{ '{销售姓名}' }。{ex}作为全球食品行业最具影响力的专业展会之一，"
-            f"每年汇聚来自世界各地的采购商、品牌商与渠道方。结合{intro}，我们相信贵司非常契合本次展会的买家画像。\n\n"
-            f"借此邮件，诚挚邀请贵司莅临{ ex }，与海外买家面对面洽谈、拓展订单。如您方便，我可先发送展位图与参展方案供参考。"
+            f"{opening}\n\n"
+            f"我是「{ex}」中国区招展团队的成员。本次致信是希望向贵司介绍这一重要的海外拓展机会。\n\n"
+            f"{ex_info_para}\n\n"
+            f"结合{intro}，我们相信贵司的产品与本次展会的买家画像高度契合。\n\n"
+            f"借此邮件，诚挚邀请贵司莅临{ex}，与海外买家面对面洽谈、拓展订单。如您方便，我可先发送展位图与参展方案供参考。\n\n"
+            f"{closing}"
         ),
         "2": (
-            f"您好！持续关注贵司在海外市场的进展。近期食品行业有几条值得留意的动态，特别与{intro}相关：\n\n"
-            f"{ ('【行业资讯】\n' + news) if news else '【行业资讯】近期多国进口食品需求回暖，买家采购意愿明显增强。' }\n\n"
-            f"结合上述趋势，{ex}将是贵司触达精准海外买家的优质窗口。如需，我可补充本次展会的买家结构与往届成交数据。"
+            f"{opening}\n\n"
+            f"持续关注贵司在海外市场的进展。近期食品行业有几条值得留意的动态，特别与{intro}相关：\n\n"
+            f"{ ('【行业资讯】\n' + news) if news else '【行业资讯】近期多国进口食品需求回暖，买家采购意愿明显增强；RCEP 框架下亚洲区内贸易成本持续下降。' }\n\n"
+            f"在此背景下，{ex}将是贵司触达精准海外买家的优质窗口——{ex_scale}。如需，我可补充本次展会的买家结构与往届成交数据。\n\n"
+            f"{closing}"
         ),
         "3": (
-            f"您好！关于{ ex }，需向您同步一个重要进展：目前优质展位余量已非常紧张，尤其贴合{intro}的展区所剩无几。\n\n"
+            f"{opening}\n\n"
+            f"关于{ex}，需向您同步一个重要进展：目前优质展位余量已非常紧张，尤其贴合{intro}的展区所剩无几。\n\n"
             f"{ ('您此前关注的重点如下：\n' + news + '\n') if news else '' }"
-            f"为保障贵司的参展位置与最佳曝光，建议尽快确认展位意向，避免错失黄金档期。我可为您预留 48 小时优先选位。"
+            f"为保障贵司的参展位置与最佳曝光，建议尽快确认展位意向，避免错失黄金档期。我可为您预留 48 小时优先选位。\n\n"
+            f"{closing}"
         ),
         "4": (
-            f"您好！{ ex }「创新大奖」申报通道现已开启，申报截止日期临近。该奖项面向具有产品创新力的食品企业，"
+            f"{opening}\n\n"
+            f"{ex}「创新大奖」申报通道现已开启，申报截止日期临近。该奖项面向具有产品创新力的食品企业，"
             f"与{intro}高度契合，是提升品牌国际曝光、获得海外买家信任的绝佳机会。\n\n"
             f"{ ('补充信息：\n' + news + '\n') if news else '' }"
-            f"如贵司有意向参与，我可协助整理申报材料并对接组委会。请勿错过截止时间。"
+            f"如贵司有意向参与，我可协助整理申报材料并对接组委会。请勿错过截止时间。\n\n"
+            f"{closing}"
         ),
         "5": (
-            f"您好！就贵司关注出海拓展的成本问题，特向您同步{ ex }相关的参展补贴政策：多地商务主管部门对中小企业海外参展给予"
+            f"{opening}\n\n"
+            f"就贵司关注出海拓展的成本问题，特向您同步{ex}相关的参展补贴政策：多地商务主管部门对中小企业海外参展给予"
             f"展位费补贴（通常 50%~70% 不等），可显著降低出海门槛。\n\n"
             f"{ ('政策要点：\n' + news + '\n') if news else '' }"
-            f"如贵司计划参展，建议尽早确认以赶上补贴申报周期，我可协助准备相关材料。"
+            f"如贵司计划参展，建议尽早确认以赶上补贴申报周期（通常需提前2-3个月），我可协助准备相关材料。\n\n"
+            f"{closing}"
         ),
     }[scene_key]
 
     tone_tail = {
-        "正式商务": "静候佳音，顺颂商祺。",
-        "简洁干练": "期待您的回复， we can move fast.",
-        "温和友好": "无论是否参展，都欢迎随时交流，祝生意兴隆！",
-        "简短": "盼复，谢谢。",
+        "正式商务": "",
+        "简洁干练": " we can move fast.",
+        "温和友好": "无论是否参展，都欢迎随时交流！",
+        "简短": "",
     }[tone_key]
 
     if tone_key == "简短":
-        scene_body = scene_body.split("\n\n")[0]
+        lines = [l for l in scene_body.split("\n") if l.strip()]
+        scene_body = "\n".join(lines[:3])  # 只保留前3段
 
-    body = f"{salutation}\n\n{scene_body}\n\n{tone_tail}\n\n{signature or '{销售姓名}'}｜{ex} 招展团队"
+    body = f"{salutation}\n\n{scene_body}{tone_tail}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
     subject_map = {
         "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
@@ -327,8 +428,6 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
         "5": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
     }
     subject = subject_map[scene_key]
-    if news:
-        subject = subject  # 保持简洁
     return subject, body
 
 # ---------------------------- 邮件发送 ----------------------------
@@ -714,13 +813,16 @@ class Handler(BaseHTTPRequestHandler):
                 b64_data = d.get("file_base64") or d.get("file_data") or ""
                 filename = d.get("filename") or "data.xlsx"
                 if not b64_data:
-                    return json_resp({"error": "未上传文件"}, 400)
+                    return json_resp({"error": "未上传文件，请先选择 Excel/CSV 文件"}, 400)
                 import base64 as b64mod
                 try:
                     raw = b64mod.b64decode(b64_data)
-                except Exception:
-                    return json_resp({"error": "文件数据解码失败"}, 400)
+                except Exception as e:
+                    return json_resp({"error": f"文件数据解码失败：{str(e)}。请确认文件未损坏后重试。"}, 400)
                 ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "xlsx"
+                # 文件大小检查(限制50MB)
+                if len(raw) > 50 * 1024 * 1024:
+                    return json_resp({"error": f"文件过大({len(raw)//1024//1024}MB)，请控制在50MB以内或拆分上传"}, 400)
                 try:
                     result = self.parse_excel_file(raw, ext)
                     if result.get("error"):
@@ -729,8 +831,20 @@ class Handler(BaseHTTPRequestHandler):
                     return json_resp({"ok": True, "imported": imp_result, "total_rows": len(result["rows"]),
                                      "preview": result["preview"], "headers": result.get("headers", []),
                                      "detected_columns": result.get("detected_columns", {})})
+                except ImportError as e:
+                    return json_resp({"error": f"服务器缺少文件解析依赖（{str(e)}）。请联系管理员安装 openpyxl。"}, 500)
                 except Exception as e:
-                    return json_resp({"error": f"文件解析失败：{str(e)}"}, 400)
+                    # 记录详细错误到stderr(容器日志可见)
+                    import traceback
+                    tb = traceback.format_exc()
+                    print(f"[Excel导入错误] 用户={uid} 文件={filename} 大小={len(raw)} 错误: {tb}", flush=True)
+                    err_msg = str(e)
+                    # 对常见错误给出友好提示
+                    if "openpyxl" in str(type(e).__module__).lower() and "No module" in err_msg:
+                        err_msg = "服务器未安装 Excel 解析库(openpyxl)，请联系管理员"
+                    elif "zip" in err_msg.lower() or "not a valid" in err_msg.lower():
+                        err_msg = "文件格式异常，请确认是有效的 .xlsx 文件（尝试用 Excel 另存为一次）"
+                    return json_resp({"error": f"文件解析失败：{err_msg}"}, 400)
             if path == "/api/templates":
                 conn.execute("INSERT INTO templates (user_id,name,exhibition,customer_type,scene,tone,subject,body,signature,attachment_ids,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                              (uid, d.get("name"), d.get("exhibition"), d.get("customer_type"), d.get("scene"), d.get("tone"),
@@ -945,23 +1059,45 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if ext == "csv":
                 rows = []
-                with open(tmp_path, "r", encoding="utf-8-sig") as f:
-                    reader = csv_mod.reader(f)
-                    for row in reader:
-                        rows.append([str(c).strip() for c in row])
+                # 尝试多种编码
+                for enc in ["utf-8-sig", "utf-8", "gbk", "gb2312", "latin-1"]:
+                    try:
+                        with open(tmp_path, "r", encoding=enc) as f:
+                            reader = csv_mod.reader(f)
+                            for row in reader:
+                                rows.append([str(c).strip() for c in row])
+                        break
+                    except (UnicodeDecodeError, UnicodeError):
+                        rows = []
+                        continue
                 if not rows:
-                    return {"error": "CSV 文件为空"}
+                    return {"error": "CSV 文件为空或编码无法识别（尝试用 UTF-8 或 GBK 保存）"}
                 headers = rows[0]
                 data_rows = rows[1:]
             elif ext == "xlsx":
-                import openpyxl
-                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                try:
+                    import openpyxl
+                except ImportError:
+                    return {"error": "服务器未安装 openpyxl 库，无法解析 .xlsx 文件。请联系管理员执行：pip install openpyxl"}
+                try:
+                    wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                except Exception as e:
+                    err_low = str(e).lower()
+                    if "bad zip" in err_low or "not a zip" in err_low or "invalid" in err_low:
+                        return {"error": "文件不是有效的 xlsx 格式。请用 Excel 另存为「Excel 工作簿(*.xlsx)」格式后重试"}
+                    return {"error": f"Excel 文件读取失败：{str(e)}"}
                 ws = wb.active
                 raw_rows = list(ws.iter_rows(values_only=True))
                 if not raw_rows:
-                    return {"error": "Excel 文件为空"}
-                headers = [str(c).strip() if c else "" for c in raw_rows[0]]
-                data_rows = [[str(c).strip() if c else "" for c in r] for r in raw_rows[1:]]
+                    return {"error": "Excel 文件为空（没有数据行）"}
+                # 跳过空行找到表头
+                header_row_idx = 0
+                for i, r in enumerate(raw_rows):
+                    if any(c for c in r if c is not None and str(c).strip()):
+                        header_row_idx = i
+                        break
+                headers = [str(c).strip() if c else "" for c in raw_rows[header_row_idx]]
+                data_rows = [[str(c).strip() if c else "" for c in r] for r in raw_rows[header_row_idx + 1:]]
             elif ext == "xls":
                 return {"error": ".xls 旧格式不支持，请另存为 .xlsx 或 .csv"}
             else:
@@ -971,6 +1107,8 @@ class Handler(BaseHTTPRequestHandler):
             for r in data_rows:
                 if any(v.strip() for v in r):
                     real_data.append(r)
+            if not real_data:
+                return {"error": "文件只有表头没有数据行"}
             # 模糊列名匹配：找到公司/联系人/邮箱列索引
             detected = Handler.fuzzy_match_columns(headers)
             preview = []

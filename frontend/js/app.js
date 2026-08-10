@@ -69,6 +69,13 @@ function showAuth() {
     $("#auth-btn").textContent = tab === "login" ? "登 录" : "注 册";
     $("#auth-msg").textContent = "";
   });
+  // 提示：已有账号请登录，不要重复注册
+  const hint = document.getElementById("auth-hint");
+  if (!hint) {
+    const el = el("div", { id: "auth-hint", style: "margin-bottom:10px;padding:10px 12px;border-radius:8px;background:#eef6ff;border:1px solid #bcdcff;color:#0b3d91;font-size:12px" },
+      "💡 <b>已有账号？</b>请直接「登录」，您的客户/展会/模板数据都保存在服务器上，重新登录后数据不会丢失。<br>只有<b>第一次使用</b>才需要点「注册」创建新账号。");
+    $("#auth-screen").insertBefore(el, $("#auth-screen").firstElementChild?.nextElementSibling || null);
+  }
   $("#auth-btn").onclick = async () => {
     const username = $("#auth-user").value.trim();
     const password = $("#auth-pass").value;
@@ -249,9 +256,51 @@ function viewCalendar() {
 async function refreshBell() {
   const r = await api("GET", "/api/todos"); const list = r.data || [];
   const now = new Date(); let n = 0;
-  list.forEach(t => { if (!t.done && t.due_time) { const d = new Date(t.due_time.replace(" ", "T")); if (d < now || (d - now) <= 86400000) n++; } });
+  const urgentTodos = []; // 收集临近/逾期待办
+  list.forEach(t => { if (!t.done && t.due_time) { const d = new Date(t.due_time.replace(" ", "T")); if (d < now || (d - now) <= 86400000) { n++; urgentTodos.push(t); } } });
   const b = $("#bell-badge"); if (n > 0) { b.style.display = "inline"; b.textContent = n; } else b.style.display = "none";
-  $("#bell").onclick = () => { STATE.view = "home"; STATE.sub = "todos"; render(); toast("有 " + n + " 条待办临近或已逾期"); };
+  // 点击铃铛 → 弹出详情面板(而不是只跳转)
+  $("#bell").onclick = () => {
+    if (urgentTodos.length === 0) {
+      toast("暂无临近或逾期的待办事项 ✅");
+      return;
+    }
+    // 按时间排序：逾期在前，即将到期在后
+    urgentTodos.sort((a, b) => new Date(a.due_time) - new Date(b.due_time));
+    const itemsHtml = urgentTodos.map(t => {
+      const d = new Date(t.due_time.replace(" ", "T"));
+      const isOverdue = d < now;
+      const timeStr = t.due_time.replace("T", " ").replace(" ", " ").slice(0, 16);
+      const priColor = t.priority === "高" ? "#dc2626" : t.priority === "中" ? "#d97706" : "#6b7280";
+      const priBg = t.priority === "高" ? "#fef2f2" : t.priority === "中" ? "#fffbeb" : "#f9fafb";
+      const statusTag = isOverdue
+        ? '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#fee2e2;color:#dc2626;font-weight:600">⚠️ 已逾期</span>'
+        : '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#dbeafe;color:#2563eb;font-weight:600">🔔 即将到期</span>';
+      const bindInfo = t.bind_date ? `<span style="color:#6b7280;font-size:11px">📅 绑定日期：${t.bind_date}</span>` : "";
+      return `
+        <div style="padding:12px;margin-bottom:8px;border-radius:8px;border-left:3px solid ${priColor};background:${priBg}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-weight:600;font-size:14px">${esc(t.title)}</span>
+            ${statusTag}
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:#4b5563">
+            <span>⏰ ${timeStr}</span>
+            <span style="color:${priColor};font-weight:600">${t.priority}优先级</span>
+            ${bindInfo}
+          </div>
+        </div>`;
+    }).join("");
+    openModal(`🔔 待办提醒（${urgentTodos.length} 条）`, `
+      <div style="max-height:400px;overflow-y:auto">
+        ${itemsHtml}
+        ${urgentTodos.length > 5 ? `<div class="muted" style="text-align:center;font-size:11px;margin-top:8px">仅显示最近 ${Math.min(urgentTodos.length, 10)} 条，完整列表请前往「首页工作台」查看</div>` : ''}
+      </div>
+      <div style="margin-top:14px;text-align:center">
+        <button class="btn btn-primary btn-block" id="bell-go-todo" style="max-width:200px;margin:0 auto">📋 前往待办清单处理</button>
+      </div>
+    `, "modal-wide");
+    $("#bell-go-todo").onclick = () => { closeModal(); STATE.view = "home"; STATE.sub = "todos"; render(); };
+  };
 }
 
 /* ================= AI 邮件模板中心 ================= */
