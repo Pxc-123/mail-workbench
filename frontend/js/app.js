@@ -812,6 +812,16 @@ function importModal() {
           }
           if (d.preview && d.preview.length > 0)
             msg += "\n前几条：" + d.preview.slice(0,3).map(p => p.company || "(无公司名)").join(", ");
+          // 导入0行时显示诊断信息
+          if ((d.imported ?? 0) === 0 && d.diagnostic) {
+            const diag = d.diagnostic;
+            msg += "\n\n⚠️ 未导入任何数据，可能原因：";
+            msg += "\n• 文件表头(列名): " + (diag.headers || []).join(" / ");
+            if (diag.skipped_empty_company > 0)
+              msg += "\n• 共 " + diag.total_rows + " 行数据，但 " + diag.skipped_empty_company + " 行的'公司名'列为空";
+            if (diag.sample_skipped_rows && diag.sample_skipped_rows.length > 0)
+              msg += "\n• 示例数据: " + diag.sample_skipped_rows.map(r => JSON.stringify(r)).join(" | ");
+          }
           closeModal(); toast(msg); render();
         } else { toast("❌ 导入失败：" + (r.error || "")); }
       } catch(err) { toast("❌ 上传异常：" + err.message); }

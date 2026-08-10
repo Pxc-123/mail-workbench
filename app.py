@@ -828,9 +828,15 @@ class Handler(BaseHTTPRequestHandler):
                     if result.get("error"):
                         return json_resp({"error": result["error"]}, 400)
                     imp_result = self.import_parsed_data(conn, uid, result["rows"], result.get("headers", []))
-                    return json_resp({"ok": True, "imported": imp_result, "total_rows": len(result["rows"]),
-                                     "preview": result["preview"], "headers": result.get("headers", []),
-                                     "detected_columns": result.get("detected_columns", {})})
+                    # imp_result 现在是 dict: {imported: N, diagnostic?: {...}}
+                    imported_count = imp_result.get("imported", 0) if isinstance(imp_result, dict) else imp_result
+                    resp = {"ok": True, "imported": imported_count, "total_rows": len(result["rows"]),
+                            "preview": result["preview"], "headers": result.get("headers", []),
+                            "detected_columns": result.get("detected_columns", {})}
+                    # 导入0行时附加诊断信息
+                    if isinstance(imp_result, dict) and imp_result.get("diagnostic"):
+                        resp["diagnostic"] = imp_result["diagnostic"]
+                    return json_resp(resp)
                 except ImportError as e:
                     return json_resp({"error": f"服务器缺少文件解析依赖（{str(e)}）。请联系管理员安装 openpyxl。"}, 500)
                 except Exception as e:
@@ -1125,57 +1131,96 @@ class Handler(BaseHTTPRequestHandler):
         col_map = {}
         for i, h in enumerate(headers):
             h_low = h.lower().strip()
-            # 公司名
-            if not col_map.get("company") and any(k in h for k in ["公司名称", "公司名", "企业名称", "单位名称", "客户公司"]):
+            h_raw = h.strip()
+            # 公司名（放宽匹配）
+            if not col_map.get("company") and any(k in h_raw for k in [
+                "公司名称", "公司名", "企业名称", "单位名称", "客户公司",
+                "公司", "企业", "供应商", "厂商", "品牌", "参展商"
+            ]):
                 col_map["company"] = i
-            if not col_map.get("company") and any(k in h_low for k in ["company", "企业"]):
+            if not col_map.get("company") and any(k in h_low for k in [
+                "company", "企业", "firm", "org", "supplier", "vendor"
+            ]):
                 col_map["company"] = i
             # 联系人/姓名
-            if not col_map.get("contact") and any(k in h for k in ["联系人", "联系姓名", "姓名", "负责人", "客户姓名"]):
+            if not col_map.get("contact") and any(k in h_raw for k in [
+                "联系人", "联系姓名", "姓名", "负责人", "客户姓名",
+                "联系人姓名", "对接人", "采购负责人", "决策人"
+            ]):
                 col_map["contact"] = i
-            if not col_map.get("contact") and any(k in h_low for k in ["contact", "name", "联系人"]):
+            if not col_map.get("contact") and any(k in h_low for k in [
+                "contact", "name", "person", "联系人"
+            ]):
                 col_map["contact"] = i
             # 邮箱
-            if not col_map.get("email") and any(k in h for k in ["邮箱", "电子邮箱", "Email", "E-mail", "邮件"]):
+            if not col_map.get("email") and any(k in h_raw for k in [
+                "邮箱", "电子邮箱", "Email", "E-mail", "邮件",
+                "邮箱地址", "E-mail地址"
+            ]):
                 col_map["email"] = i
-            if not col_map.get("email") and "email" in h_low or "mail" in h_low:
+            if not col_map.get("email") and ("email" in h_low or "mail" in h_low or "e_mail" in h_low):
                 col_map["email"] = i
             # 电话
-            if not col_map.get("phone") and any(k in h for k in ["联系电话", "手机号", "电话", "手机"]):
+            if not col_map.get("phone") and any(k in h_raw for k in [
+                "联系电话", "手机号", "电话", "手机", "手机号码",
+                "联系方式", "电话号码", "Tel"
+            ]):
                 col_map["phone"] = i
             if not col_map.get("phone") and any(k in h_low for k in ["phone", "tel", "mobile"]):
                 col_map["phone"] = i
             # 展会/意向
-            if not col_map.get("exhibition") and any(k in h for k in ["参展记录", "意向展会", "展会", "参展"]):
+            if not col_map.get("exhibition") and any(k in h_raw for k in [
+                "参展记录", "意向展会", "展会", "参展", "目标展会",
+                "感兴趣展会", "参展意向"
+            ]):
                 col_map["exhibition"] = i
             # 标签
-            if not col_map.get("tags") and any(k in h for k in ["标签", "分类", "属性"]):
+            if not col_map.get("tags") and any(k in h_raw for k in ["标签", "分类", "属性", "类别", "行业"]):
                 col_map["tags"] = i
             # 备注
-            if not col_map.get("remark") and any(k in h for k in ["备注", "跟踪记录", "说明", "情况"]):
+            if not col_map.get("remark") and any(k in h_raw for k in ["备注", "跟踪记录", "说明", "情况", "备注信息", "描述"]):
                 col_map["remark"] = i
-        # 兜底：如果只有一列且含"公司"，当 company
+        # 兜底1：如果只有一列且含"公司"，当 company
         if not col_map.get("company") and len(headers) == 1:
             col_map["company"] = 0
+        # 兜底2：如果有多列但没匹配到公司名，用第一列作为公司名(常见Excel格式)
+        if not col_map.get("company") and len(headers) > 0:
+            col_map["company"] = 0
+            col_map["_fallback_company"] = True
         return col_map
 
     def import_parsed_data(self, conn, uid, rows, headers):
         """根据模糊匹配的列，将已解析的行数据导入数据库"""
         detected = self.fuzzy_match_columns(headers)
         count = 0
+        skipped_empty = 0
+        sample_skipped = []  # 记录前3条被跳过的行(用于诊断)
         for row in rows:
             def gv(key):
                 idx = detected.get(key)
                 return (row[idx].strip() if idx is not None and idx < len(row) else "")
             company = gv("company")
             if not company:
+                skipped_empty += 1
+                if len(sample_skipped) < 3:
+                    sample_skipped.append(row[:min(4, len(row))])
                 continue
             conn.execute("INSERT INTO customers (user_id,company,contact,email,phone,exhibition,tags,remark,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                          (uid, company, gv("contact"), gv("email"), gv("phone"),
                           gv("exhibition"), gv("tags"), gv("remark"), now_iso()))
             count += 1
         conn.commit()
-        return count
+        # 返回详细结果，包含诊断信息
+        result = {"imported": count}
+        if count == 0:
+            result["diagnostic"] = {
+                "headers": headers,
+                "detected_columns": detected,
+                "total_rows": len(rows),
+                "skipped_empty_company": skipped_empty,
+                "sample_skipped_rows": sample_skipped,
+            }
+        return result
 
     def preview_emails(self, conn, uid, u, d):
         """根据模板内容 + 客户来源，渲染个性化邮件预览"""
