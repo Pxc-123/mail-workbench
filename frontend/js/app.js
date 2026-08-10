@@ -79,14 +79,9 @@ function showAuth() {
     $("#auth-btn").textContent = tab === "login" ? "登 录" : "注 册";
     $("#auth-msg").textContent = "";
   });
-  // 提示：已有账号请登录，不要重复注册
-  const hint = document.getElementById("auth-hint");
-  if (!hint) {
-    const hintEl = el("div", { id: "auth-hint", style: "margin-bottom:10px;padding:10px 12px;border-radius:8px;background:#eef6ff;border:1px solid #bcdcff;color:#0b3d91;font-size:12px" },
-      "💡 <b>已有账号？</b>请直接「登录」，您的客户/展会/模板数据都保存在服务器上，重新登录后数据不会丢失。<br>只有<b>第一次使用</b>才需要点「注册」创建新账号。");
-    $("#auth-screen").insertBefore(hintEl, $("#auth-screen").firstElementChild?.nextElementSibling || null);
-  }
   $("#auth-btn").onclick = async () => {
+    // 调试：确认 onclick 是否被触发
+    alert("按钮被点击了! 即将尝试登录...");
     try {
       const username = $("#auth-user").value.trim();
       const password = $("#auth-pass").value;
