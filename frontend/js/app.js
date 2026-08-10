@@ -17,18 +17,28 @@ const STATE = {
    __MODE = "backend" → 后端模式：直连真实后端，可真实发送邮件（用于部署带后端的完整版）
    后端模式下 __BACKEND_URL 为空表示同源，否则填完整 https 地址。 */
 async function api(method, path, body) {
-  if (window.__MODE === "backend") {
-    const base = window.__BACKEND_URL || "";
-    const headers = { "Content-Type": "application/json" };
-    if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
-    const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (res.status === 401) { logout(); throw new Error("登录已过期"); }
-    return { ok: res.ok, status: res.status, data };
+  try {
+    if (window.__MODE === "backend") {
+      const base = window.__BACKEND_URL || "";
+      // 用 text/plain 避免触发 CORS 预检（部分网络/代理会拦截 OPTIONS 导致请求卡死）
+      const headers = { "Content-Type": "text/plain; charset=utf-8" };
+      if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+      const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (res.status === 401) { logout(); throw new Error("登录已过期，请重新登录"); }
+      if (!res.ok) throw new Error("服务器返回 " + res.status + (data && data.error ? "：" + data.error : ""));
+      return { ok: true, status: res.status, data };
+    }
+    // 纯前端模式：走 localStorage 实现
+    return window.__localApi(method, path, body);
+  } catch (e) {
+    const m = (e && e.message) || String(e);
+    if (m.indexOf("Failed to fetch") >= 0 || m.indexOf("NetworkError") >= 0 || m.indexOf("网络") >= 0) {
+      throw new Error("⚠️ 网络连接失败：浏览器无法连到服务器。可能是你的网络/公司防火墙拦截了请求，建议换手机流量或网络后重试。");
+    }
+    throw e;
   }
-  // 纯前端模式：走 localStorage 实现
-  return window.__localApi(method, path, body);
 }
 function $(sel, root = document) { return root.querySelector(sel); }
 function $all(sel, root = document) { return [...root.querySelectorAll(sel)]; }
