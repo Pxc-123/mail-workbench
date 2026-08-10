@@ -77,17 +77,23 @@ function showAuth() {
     $("#auth-screen").insertBefore(el, $("#auth-screen").firstElementChild?.nextElementSibling || null);
   }
   $("#auth-btn").onclick = async () => {
-    const username = $("#auth-user").value.trim();
-    const password = $("#auth-pass").value;
-    const name = $("#auth-name").value.trim();
-    $("#auth-msg").textContent = "";
-    if (!username || !password) { $("#auth-msg").textContent = "请输入用户名和密码"; return; }
-    const path = tab === "login" ? "/api/login" : "/api/register";
-    const { ok, data } = await api("POST", path, { username, password, display_name: name });
-    if (!ok) { $("#auth-msg").textContent = data.error || "操作失败"; return; }
-    TOKEN = data.token; USER = data.user;
-    localStorage.setItem("wb_token", TOKEN); localStorage.setItem("wb_user", JSON.stringify(USER));
-    enterApp();
+    try {
+      const username = $("#auth-user").value.trim();
+      const password = $("#auth-pass").value;
+      const name = $("#auth-name").value.trim();
+      $("#auth-msg").textContent = "";
+      if (!username || !password) { $("#auth-msg").textContent = "请输入用户名和密码"; return; }
+      const path = tab === "login" ? "/api/login" : "/api/register";
+      $("#auth-msg").textContent = "正在连接服务器...";
+      const { ok, data } = await api("POST", path, { username, password, display_name: name });
+      if (!ok) { $("#auth-msg").textContent = data.error || "操作失败"; return; }
+      TOKEN = data.token; USER = data.user;
+      localStorage.setItem("wb_token", TOKEN); localStorage.setItem("wb_user", JSON.stringify(USER));
+      enterApp();
+    } catch (e) {
+      console.error("[登录错误]", e);
+      $("#auth-msg").textContent = "⚠️ 连接失败: " + (e.message || String(e)) + " — 请检查网络后重试";
+    }
   };
 }
 function logout() { TOKEN = null; USER = null; localStorage.removeItem("wb_token"); localStorage.removeItem("wb_user"); showAuth(); }
@@ -1225,5 +1231,17 @@ function openChangeMyPassword() {
 
 /* ---------- 启动 ---------- */
 function card(title, child) { const c = el("div", { class: "card" }); c.appendChild(el("h3", {}, title)); c.appendChild(child); return c; }
+/* 全局错误捕获：防止 JS 报错导致页面无响应 */
+window.onerror = function(msg, src, line, col, err) {
+  console.error("[全局错误]", msg, "at", src, ":", line);
+  const m = $("#auth-msg");
+  if (m) m.textContent = "⚠️ 页面错误: " + msg + " (行" + line + ")";
+  return false;
+};
+window.addEventListener("unhandledrejection", function(e) {
+  console.error("[未捕获Promise]", e.reason);
+  const m = $("#auth-msg");
+  if (m) m.textContent = "⚠️ 连接异常: " + (e.reason?.message || String(e.reason));
+});
 function init() { if (TOKEN && USER) enterApp(); else showAuth(); }
 init();
