@@ -1053,11 +1053,21 @@ class Handler(BaseHTTPRequestHandler):
             return json_resp({"error": str(e)}, 400)
 
     # ---------- Excel 文件上传解析（openpyxl 可靠解析） ----------
+    # 常见表头关键词，用于判断一行是不是真正的表头
+    _HEADER_KEYWORDS = {"公司", "名称", "联系", "邮箱", "邮件", "手机", "电话", "展会",
+                        "标签", "备注", "客户", "企业", "供应商", "省", "市", "区", "县",
+                        "产品", "类型", "序号", "编号", "姓名", "地址", "职位", "行业"}
+
+    @staticmethod
+    def _looks_like_header(row):
+        """判断一行是否像表头（包含常见表头关键词）"""
+        text = " ".join(str(c).strip() for c in row if c)
+        return any(kw in text for kw in Handler._HEADER_KEYWORDS)
+
     @staticmethod
     def parse_excel_file(raw_data, ext):
         """用 openpyxl 解析 Excel/CSV 文件，返回 {rows, headers, preview, detected_columns, error?}"""
         import tempfile, csv as csv_mod
-        # 写临时文件让 openpyxl 读取
         suffix = "." + ("xlsx" if ext in ("xlsx", "xls") else "csv")
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(raw_data)
@@ -1065,7 +1075,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if ext == "csv":
                 rows = []
-                # 尝试多种编码
                 for enc in ["utf-8-sig", "utf-8", "gbk", "gb2312", "latin-1"]:
                     try:
                         with open(tmp_path, "r", encoding=enc) as f:
@@ -1077,51 +1086,76 @@ class Handler(BaseHTTPRequestHandler):
                         rows = []
                         continue
                 if not rows:
-                    return {"error": "CSV 文件为空或编码无法识别（尝试用 UTF-8 或 GBK 保存）"}
-                headers = rows[0]
-                data_rows = rows[1:]
+                    return {"error": "CSV 文件为空或编码无法识别"}
+                # CSV 也智能找表头：跳过标题行
+                header_idx = 0
+                for i, r in enumerate(rows):
+                    if any(c.strip() for c in r):
+                        if Handler._looks_like_header(r):
+                            header_idx = i
+                            break
+                        if i + 1 < len(rows) and Handler._looks_like_header(rows[i + 1]):
+                            header_idx = i + 1
+                            break
+                        header_idx = i
+                        break
+                headers = [str(c).strip() if c else "" for c in rows[header_idx]]
+                data_rows = [[str(c).strip() if c else "" for c in r] for r in rows[header_idx + 1:]]
+
             elif ext == "xlsx":
                 try:
                     import openpyxl
                 except ImportError:
-                    return {"error": "服务器未安装 openpyxl 库，无法解析 .xlsx 文件。请联系管理员执行：pip install openpyxl"}
+                    return {"error": "服务器未安装 openpyxl 库"}
                 try:
                     wb = openpyxl.load_workbook(tmp_path, data_only=True)
                 except Exception as e:
                     err_low = str(e).lower()
                     if "bad zip" in err_low or "not a zip" in err_low or "invalid" in err_low:
-                        return {"error": "文件不是有效的 xlsx 格式。请用 Excel 另存为「Excel 工作簿(*.xlsx)」格式后重试"}
+                        return {"error": "文件不是有效的 xlsx 格式"}
                     return {"error": f"Excel 文件读取失败：{str(e)}"}
                 ws = wb.active
                 raw_rows = list(ws.iter_rows(values_only=True))
                 if not raw_rows:
-                    return {"error": "Excel 文件为空（没有数据行）"}
-                # 跳过空行找到表头
-                header_row_idx = 0
+                    return {"error": "Excel 文件为空"}
+                # 智能找表头行：跳过标题行（如"销售跟进情况表"）
+                header_row_idx = None
                 for i, r in enumerate(raw_rows):
-                    if any(c for c in r if c is not None and str(c).strip()):
+                    if not any(c for c in r if c is not None and str(c).strip()):
+                        continue
+                    if Handler._looks_like_header(r):
                         header_row_idx = i
                         break
+                    if i + 1 < len(raw_rows) and Handler._looks_like_header(raw_rows[i + 1]):
+                        header_row_idx = i + 1
+                        break
+                    header_row_idx = i
+                    break
+
+                if header_row_idx is None:
+                    return {"error": "Excel 文件没有可识别的表头或数据"}
+
                 headers = [str(c).strip() if c else "" for c in raw_rows[header_row_idx]]
-                data_rows = [[str(c).strip() if c else "" for c in r] for r in raw_rows[header_row_idx + 1:]]
+                data_rows = []
+                for r in raw_rows[header_row_idx + 1:]:
+                    row_str = [str(c).strip() if c else "" for c in r]
+                    if any(v.strip() for v in row_str):
+                        data_rows.append(row_str)
             elif ext == "xls":
                 return {"error": ".xls 旧格式不支持，请另存为 .xlsx 或 .csv"}
             else:
                 return {"error": f"不支持的文件格式：.{ext}"}
-            # 过滤掉全空的行和标题行（如"销售跟进情况表"）
-            real_data = []
-            for r in data_rows:
-                if any(v.strip() for v in r):
-                    real_data.append(r)
-            if not real_data:
+
+            if not data_rows:
                 return {"error": "文件只有表头没有数据行"}
-            # 模糊列名匹配：找到公司/联系人/邮箱列索引
+
+            # 模糊列名匹配
             detected = Handler.fuzzy_match_columns(headers)
             _data_keys = ["company","contact","email","phone","exhibition","tags","remark"]
             preview = []
-            for r in real_data[:10]:
+            for r in data_rows[:10]:
                 preview.append({k: (r[v] if isinstance(v,int) and v < len(r) else "") for k in _data_keys for v in [detected.get(k)]})
-            return {"rows": real_data, "headers": headers, "preview": preview,
+            return {"rows": data_rows, "headers": headers, "preview": preview,
                     "detected_columns": detected}
         finally:
             os.unlink(tmp_path)
