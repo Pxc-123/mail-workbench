@@ -1185,7 +1185,42 @@ function viewAdmin() {
       } catch (e) { toast("导入异常：" + e.message); }
     };
   };
+  // 导出/导入「全部（含附件）zip」——用于挂持久盘前完整备份，避免附件丢失
+  const btnExportZip = el("button", { class: "btn" }, "📦 导出全部(含附件)");
+  btnExportZip.onclick = async () => {
+    try {
+      const base = window.__BACKEND_URL || "";
+      const headers = { "Content-Type": "text/plain" };
+      if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+      const res = await fetch(base + "/api/admin/backup/export-zip", { method: "GET", headers });
+      if (!res.ok) { toast("导出失败：" + res.status); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "mailwb-full-backup-" + new Date().toISOString().slice(0,10) + ".zip";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast("✅ 全部备份已下载（含附件）");
+    } catch (e) { toast("导出异常：" + e.message); }
+  };
+  const btnImportZip = el("button", { class: "btn" }, "📦 导入全部(含附件)");
+  btnImportZip.onclick = () => {
+    const html = `<div class="muted" style="margin-bottom:10px;font-size:13px">选择之前下载的「全部备份」zip 文件。导入会<b>覆盖</b>当前数据库与所有附件，请谨慎操作。</div>
+      <input type="file" id="bk-zip" accept=".zip" class="input"/>
+      <div class="action-bar" style="margin-top:12px"><button class="btn btn-primary" id="bk-zip-ok">确认导入</button></div>`;
+    openModal("导入全部备份(含附件，将覆盖)", html);
+    $("bk-zip-ok").onclick = async () => {
+      const f = $("bk-zip").files[0];
+      if (!f) { toast("请先选择备份文件"); return; }
+      const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(f); });
+      const r = await api("POST", "/api/admin/backup/import-zip", { zip_b64: b64 });
+      if (!r.ok) { toast("导入失败：" + (r.data.error || "")); return; }
+      closeModal();
+      toast("✅ 已恢复，请刷新页面重新登录");
+    };
+  };
   backupBar.appendChild(btnExport); backupBar.appendChild(btnImport);
+  backupBar.appendChild(btnExportZip); backupBar.appendChild(btnImportZip);
   backupCard.appendChild(backupBar);
   wrap.appendChild(backupCard);
 

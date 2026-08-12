@@ -628,6 +628,27 @@ class Handler(BaseHTTPRequestHandler):
                 return json_resp(data)
             finally:
                 conn.close()
+        if path == "/api/admin/backup/export-zip":
+            # 全量导出（含数据库 + 所有附件文件）为 zip，用于挂持久盘前完整备份
+            import io, zipfile
+            c2 = get_db(); c2.close()  # 确保落盘
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                if os.path.exists(DB_PATH):
+                    zf.write(DB_PATH, "workbench.db")
+                if os.path.isdir(UPLOAD_DIR):
+                    for root, dirs, files in os.walk(UPLOAD_DIR):
+                        for fn in files:
+                            fp = os.path.join(root, fn)
+                            arc = os.path.relpath(fp, UPLOAD_DIR)
+                            zf.write(fp, os.path.join("uploads", arc))
+            data = buf.getvalue()
+            fname = "mailwb-full-backup-%s.zip" % now_iso()[:10]
+            return 200, {
+                "Content-Type": "application/zip",
+                "Content-Disposition": 'attachment; filename="%s"' % fname,
+                "Content-Length": str(len(data)),
+            }, data
         return json_resp({"error": "not found"}, 404)
 
     def admin_post(self, path, admin):
@@ -710,6 +731,56 @@ class Handler(BaseHTTPRequestHandler):
                     return json_resp({"error": f"导入失败：{str(e)}"}, 500)
         finally:
             conn.close()
+        if path == "/api/admin/backup/import-zip":
+            # 全量恢复（含数据库 + 附件），会覆盖当前数据，用于迁移后恢复
+            import io, zipfile, base64, tempfile, shutil
+            zip_b64 = d.get("zip_b64") or ""
+            if not zip_b64:
+                return json_resp({"error": "未收到备份文件"}, 400)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                raw = base64.b64decode(zip_b64)
+            except Exception:
+                return json_resp({"error": "备份文件解码失败"}, 400)
+            tmp = tempfile.mkdtemp()
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+                    zf.extractall(tmp)
+                db_src = os.path.join(tmp, "workbench.db")
+                if os.path.exists(db_src):
+                    if os.path.exists(DB_PATH):
+                        try:
+                            os.remove(DB_PATH)
+                        except Exception:
+                            pass
+                    shutil.move(db_src, DB_PATH)
+                up_src = os.path.join(tmp, "uploads")
+                if os.path.isdir(up_src):
+                    if os.path.isdir(UPLOAD_DIR):
+                        for fn in os.listdir(UPLOAD_DIR):
+                            fp = os.path.join(UPLOAD_DIR, fn)
+                            try:
+                                if os.path.isfile(fp):
+                                    os.remove(fp)
+                                elif os.path.isdir(fp):
+                                    shutil.rmtree(fp)
+                            except Exception:
+                                pass
+                    for root, dirs, files in os.walk(up_src):
+                        for fn in files:
+                            src = os.path.join(root, fn)
+                            rel = os.path.relpath(src, up_src)
+                            dst = os.path.join(UPLOAD_DIR, rel)
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(src, dst)
+                return json_resp({"ok": True, "note": "数据库与附件已恢复，请刷新页面重新登录"})
+            except Exception as e:
+                return json_resp({"error": "恢复失败：" + str(e)}, 500)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
         return json_resp({"error": "not found"}, 404)
 
     def admin_delete(self, path, admin):
