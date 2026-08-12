@@ -1145,6 +1145,50 @@ function viewAdmin() {
   wrap.appendChild(el("div", { class: "section-title" }, "🛡️ 管理员中心"));
   wrap.appendChild(el("div", { class: "section-sub" }, "管理所有成员账号：重置密码、新建/删除成员、设置管理员。各成员数据仍互相隔离。"));
 
+  // 数据备份卡片（防止重部署/换服务器导致数据丢失）
+  const backupCard = el("div", { class: "card" });
+  backupCard.appendChild(el("div", { class: "label" }, "💾 数据备份与恢复（推荐定期导出）"));
+  backupCard.appendChild(el("div", { class: "muted", style: "margin-bottom:10px;font-size:13px" },
+    "导出会下载一个包含所有客户、账号、发送日志的备份文件。重部署或换服务器前先导出，部署后再「导入备份」即可零丢失恢复。"));
+  const backupBar = el("div", { class: "action-bar" });
+  const btnExport = el("button", { class: "btn btn-primary" }, "⬇️ 导出备份");
+  btnExport.onclick = async () => {
+    try {
+      const r = await api("GET", "/api/backup/export");
+      if (!r.ok) { toast("导出失败：" + (r.data.error || "")); return; }
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "mailwb-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("✅ 备份已下载");
+    } catch (e) { toast("导出异常：" + e.message); }
+  };
+  const btnImport = el("button", { class: "btn btn-ok" }, "⬆️ 导入备份");
+  btnImport.onclick = () => {
+    const html = `<div class="muted" style="margin-bottom:10px;font-size:13px">选择之前导出的备份 JSON 文件。导入会<b>覆盖</b>当前所有数据，请谨慎操作。</div>
+      <input id="bk-file" type="file" accept="application/json,.json" class="inp">
+      <div class="action-bar"><button class="btn btn-primary" id="bk-ok">确认导入</button></div>`;
+    openModal("导入备份（将覆盖当前数据）", html);
+    $("#bk-ok").onclick = async () => {
+      const f = $("#bk-file").files[0];
+      if (!f) { toast("请先选择备份文件"); return; }
+      try {
+        const text = await f.text();
+        const data = JSON.parse(text);
+        const r = await api("POST", "/api/backup/import", { data });
+        if (!r.ok) { toast("导入失败：" + (r.data.error || "")); return; }
+        closeModal();
+        toast("✅ 备份已导入，请刷新页面");
+        setTimeout(() => location.reload(), 800);
+      } catch (e) { toast("导入异常：" + e.message); }
+    };
+  };
+  backupBar.appendChild(btnExport); backupBar.appendChild(btnImport);
+  backupCard.appendChild(backupBar);
+  wrap.appendChild(backupCard);
+
   const actionBar = el("div", { class: "action-bar" });
   const btnCreate = el("button", { class: "btn btn-primary" }, "➕ 新建成员 / 管理员");
   btnCreate.onclick = () => openCreateUser();

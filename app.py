@@ -615,6 +615,19 @@ class Handler(BaseHTTPRequestHandler):
             rows = conn.execute("SELECT id,username,display_name,role,created_at FROM users ORDER BY id").fetchall()
             conn.close()
             return json_resp([row_to_dict(r) for r in rows])
+        if path == "/api/backup/export":
+            # 全量导出（管理员）：用于跨重部署/换服务器迁移数据，防止数据丢失
+            conn = get_db()
+            try:
+                tables = [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+                data = {"version": 1, "exported_at": now_iso(), "app": "mail-workbench", "tables": {}}
+                for t in tables:
+                    rows = conn.execute(f"SELECT * FROM {t}").fetchall()
+                    data["tables"][t] = [dict(r) for r in rows]
+                return json_resp(data)
+            finally:
+                conn.close()
         return json_resp({"error": "not found"}, 404)
 
     def admin_post(self, path, admin):
@@ -658,6 +671,43 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("UPDATE users SET role=? WHERE id=?", (role, uid))
                 conn.commit()
                 return json_resp({"ok": True})
+            if path == "/api/backup/import":
+                # 全量导入（管理员）：清空并重建各表，用于迁移恢复
+                payload = d.get("data") or d
+                tables = payload.get("tables") or {}
+                if not isinstance(tables, dict) or not tables:
+                    return json_resp({"error": "备份数据为空或格式不正确"}, 400)
+                try:
+                    conn.execute("PRAGMA foreign_keys=OFF")
+                    restored = []
+                    for t, rows in tables.items():
+                        if not isinstance(rows, list) or not rows:
+                            continue
+                        # 只恢复已知业务表，防止误导入系统表
+                        conn.execute(f"DELETE FROM {t}")
+                        for row in rows:
+                            cols = [c for c in row.keys() if c != "rowid"]
+                            if not cols:
+                                continue
+                            col_names = ",".join(cols)
+                            placeholders = ",".join("?" for _ in cols)
+                            conn.execute(f"INSERT INTO {t} ({col_names}) VALUES ({placeholders})",
+                                         [row[c] for c in cols])
+                        restored.append(t)
+                    # 修正自增序列，避免后续插入主键冲突
+                    for t in restored:
+                        try:
+                            maxid = conn.execute(f"SELECT MAX(id) FROM {t}").fetchone()[0]
+                            if maxid is not None:
+                                conn.execute("INSERT OR REPLACE INTO sqlite_sequence(name,seq) VALUES (?,?)", (t, maxid))
+                        except Exception:
+                            pass
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    conn.commit()
+                    return json_resp({"ok": True, "restored_tables": restored})
+                except Exception as e:
+                    conn.rollback()
+                    return json_resp({"error": f"导入失败：{str(e)}"}, 500)
         finally:
             conn.close()
         return json_resp({"error": "not found"}, 404)
