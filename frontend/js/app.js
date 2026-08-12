@@ -17,28 +17,43 @@ const STATE = {
    __MODE = "backend" → 后端模式：直连真实后端，可真实发送邮件（用于部署带后端的完整版）
    后端模式下 __BACKEND_URL 为空表示同源，否则填完整 https 地址。 */
 async function api(method, path, body) {
-  try {
-    if (window.__MODE === "backend") {
-      const base = window.__BACKEND_URL || "";
-      // 用 text/plain 避免触发 CORS 预检（部分网络/代理会拦截 OPTIONS 导致请求卡死）
-      const headers = { "Content-Type": "text/plain; charset=utf-8" };
-      if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
-      const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-      let data = {};
-      try { data = await res.json(); } catch (e) {}
-      if (res.status === 401) { logout(); throw new Error("登录已过期，请重新登录"); }
-      if (!res.ok) throw new Error("服务器返回 " + res.status + (data && data.error ? "：" + data.error : ""));
-      return { ok: true, status: res.status, data };
+  const MAX_RETRIES = 2;
+  const TIMEOUT_MS = 30000; // 30秒超时（CloudBase冷启动可能需要较长时间）
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (window.__MODE === "backend") {
+        const base = window.__BACKEND_URL || "";
+        const headers = { "Content-Type": "text/plain; charset=utf-8" };
+        if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+        // AbortController 实现超时控制
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: controller.signal });
+        clearTimeout(timer);
+        let data = {};
+        try { data = await res.json(); } catch (e) {}
+        if (res.status === 401) { logout(); throw new Error("登录已过期，请重新登录"); }
+        if (!res.ok) throw new Error("服务器返回 " + res.status + (data && data.error ? "：" + data.error : ""));
+        return { ok: true, status: res.status, data };
+      }
+      return window.__localApi(method, path, body);
+    } catch (e) {
+      lastErr = e;
+      // 只对网络错误重试，不重试业务错误
+      const m = (e && e.message) || String(e);
+      const isNetworkError = m.indexOf("Failed to fetch") >= 0 || m.indexOf("NetworkError") >= 0 || m.indexOf("网络") >= 0 || m.indexOf("abort") >= 0 || m.indexOf("The operation was aborted") >= 0;
+      if (!isNetworkError || attempt >= MAX_RETRIES) break;
+      // 重试前等待一下，显示提示
+      if (attempt === 0) toast("⏳ 服务器唤醒中，正在重连...");
+      await new Promise(r => setTimeout(r, 2000));
     }
-    // 纯前端模式：走 localStorage 实现
-    return window.__localApi(method, path, body);
-  } catch (e) {
-    const m = (e && e.message) || String(e);
-    if (m.indexOf("Failed to fetch") >= 0 || m.indexOf("NetworkError") >= 0 || m.indexOf("网络") >= 0) {
-      throw new Error("⚠️ 网络连接失败：浏览器无法连到服务器。可能是你的网络/公司防火墙拦截了请求，建议换手机流量或网络后重试。");
-    }
-    throw e;
   }
+  const m = (lastErr && lastErr.message) || String(lastErr);
+  if (m.indexOf("Failed to fetch") >= 0 || m.indexOf("NetworkError") >= 0 || m.indexOf("网络") >= 0 || m.indexOf("abort") >= 0 || m.indexOf("The operation was aborted") >= 0) {
+    throw new Error("⚠️ 连接失败：服务器可能正在启动中（首次访问需等待约30秒）。请稍等几秒后点击「登录」重试。");
+  }
+  throw lastErr;
 }
 function $(sel, root = document) { return root.querySelector(sel); }
 function $all(sel, root = document) { return [...root.querySelectorAll(sel)]; }
