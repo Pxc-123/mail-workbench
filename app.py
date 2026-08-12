@@ -86,10 +86,18 @@ def _cos_upload_file(local_path, cos_key):
     if not client or not os.path.exists(local_path):
         return False
     try:
-        client.upload_file(Bucket=os.environ["COS_BUCKET"], LocalFilePath=local_path, Key=cos_key)
+        with open(local_path, "rb") as f:
+            client.put_object(
+                Bucket=os.environ["COS_BUCKET"],
+                Key=cos_key,
+                Body=f,
+            )
         return True
     except Exception as e:
+        # 打印完整错误信息，便于排查（如密钥/桶名/地域不匹配）
+        import traceback
         print("[COS] 上传失败 %s: %s" % (cos_key, e), flush=True)
+        traceback.print_exc()
         return False
 
 def cos_upload_db():
