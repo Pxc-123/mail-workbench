@@ -1722,6 +1722,7 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 def main():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     if COS_ENABLED:
         # 容器本地文件系统是临时的；启动时先从 COS 拉取最新数据库与附件
         cos_download_db()
