@@ -202,20 +202,16 @@ SESS_LOCK = threading.Lock()
 
 # ---------------------------- 数据库 ----------------------------
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, factory=_PersistedConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    _wrap_commit(conn)
     return conn
 
-def _wrap_commit(conn):
-    """包装 commit，使其在执行后自动把数据库同步到 COS（防重部署丢数据）。"""
-    orig = conn.commit
-    def commit(*a, **k):
-        r = orig(*a, **k)
+class _PersistedConnection(sqlite3.Connection):
+    """包装 SQLite 连接，每次 commit 后自动把数据库同步到 COS。"""
+    def commit(self):
+        super().commit()
         _schedule_cos_db_sync()
-        return r
-    conn.commit = commit
 
 def init_db():
     conn = get_db()
