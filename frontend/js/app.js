@@ -18,7 +18,7 @@ const STATE = {
    后端模式下 __BACKEND_URL 为空表示同源，否则填完整 https 地址。 */
 async function api(method, path, body) {
   const MAX_RETRIES = 2;
-  const TIMEOUT_MS = 30000; // 30秒超时（CloudBase冷启动可能需要较长时间）
+  const TIMEOUT_MS = 45000; // 45秒超时（CloudBase免费版冷启动可能较慢）
   let lastErr;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -84,8 +84,21 @@ function closeModal() { $("#modal-root").innerHTML = ""; }
 function esc(s) { return (s || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 /* ---------- 认证 ---------- */
+// 后台唤醒 CloudBase 冷启动容器：打开登录页时先发一个轻量请求把服务叫醒，
+// 这样等用户输入完密码点登录时，服务器通常已经热好了，避免“开机无法登录”。
+function warmServer() {
+  if (window.__MODE !== "backend") return;
+  const base = window.__BACKEND_URL || "";
+  const msg = $("#auth-msg");
+  if (msg && !msg.textContent) msg.textContent = "⏳ 服务器预热中（首次访问较慢，约10-30秒）...";
+  fetch(base + "/api/me", { method: "GET", headers: { "Content-Type": "text/plain; charset=utf-8" } })
+    .then(() => { if (msg && msg.textContent.indexOf("预热") >= 0) msg.textContent = ""; })
+    .catch(() => {});
+}
+
 function showAuth() {
   $("#app").style.display = "none"; $("#auth-screen").style.display = "flex";
+  warmServer();
   let tab = "login";
   $all(".auth-tabs span").forEach(s => s.onclick = () => {
     tab = s.dataset.tab;
@@ -95,23 +108,33 @@ function showAuth() {
     $("#auth-msg").textContent = "";
   });
   $("#auth-btn").onclick = async () => {
-    try {
-      const username = $("#auth-user").value.trim();
-      const password = $("#auth-pass").value;
-      const name = $("#auth-name").value.trim();
-      $("#auth-msg").textContent = "";
-      if (!username || !password) { $("#auth-msg").textContent = "请输入用户名和密码"; return; }
-      const path = tab === "login" ? "/api/login" : "/api/register";
-      $("#auth-msg").textContent = "正在连接服务器...";
-      const { ok, data } = await api("POST", path, { username, password, display_name: name });
-      if (!ok) { $("#auth-msg").textContent = data.error || "操作失败"; return; }
-      TOKEN = data.token; USER = data.user;
-      localStorage.setItem("wb_token", TOKEN); localStorage.setItem("wb_user", JSON.stringify(USER));
-      enterApp();
-    } catch (e) {
-      console.error("[登录错误]", e);
-      $("#auth-msg").textContent = "⚠️ 连接失败: " + (e.message || String(e)) + " — 请检查网络后重试";
+    const username = $("#auth-user").value.trim();
+    const password = $("#auth-pass").value;
+    const name = $("#auth-name").value.trim();
+    $("#auth-msg").textContent = "";
+    if (!username || !password) { $("#auth-msg").textContent = "请输入用户名和密码"; return; }
+    const path = tab === "login" ? "/api/login" : "/api/register";
+    let lastErr;
+    // 自动重试：冷启动容器唤醒需要时间，连续重试直到成功或耗尽
+    for (let i = 0; i <= 4; i++) {
+      try {
+        $("#auth-msg").textContent = i === 0 ? "正在连接服务器..." : "⏳ 服务器唤醒中，正在重试(" + i + "/4)...";
+        const { ok, data } = await api("POST", path, { username, password, display_name: name });
+        if (!ok) { $("#auth-msg").textContent = data.error || "操作失败"; return; }
+        TOKEN = data.token; USER = data.user;
+        localStorage.setItem("wb_token", TOKEN); localStorage.setItem("wb_user", JSON.stringify(USER));
+        enterApp();
+        return;
+      } catch (e) {
+        lastErr = e;
+        const m = (e && e.message) || "";
+        const isNet = m.indexOf("连接失败") >= 0 || m.indexOf("Failed to fetch") >= 0 || m.indexOf("网络") >= 0 || m.indexOf("abort") >= 0 || m.indexOf("aborted") >= 0;
+        if (!isNet || i >= 4) break;
+        await new Promise(r => setTimeout(r, 2500));
+      }
     }
+    console.error("[登录错误]", lastErr);
+    $("#auth-msg").textContent = "⚠️ 连接失败: " + ((lastErr && lastErr.message) || "未知错误") + " — 稍候点击「登录」再试一次";
   };
 }
 function logout() { TOKEN = null; USER = null; localStorage.removeItem("wb_token"); localStorage.removeItem("wb_user"); showAuth(); }
