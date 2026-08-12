@@ -1,0 +1,13 @@
+# 数据库文件（运行时由 init_db 自动创建，不要入库）
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.log
+
+# 本地工具运行时日志
+tools/keepalive.log
