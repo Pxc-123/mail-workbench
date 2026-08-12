@@ -185,9 +185,13 @@ def _cos_worker_loop():
             if not _cos_sync_pending:
                 continue
             _cos_sync_pending = False
-        cos_upload_db()
+        try:
+            cos_upload_db()
+        except Exception as e:
+            print("[COS] 同步失败（不影响系统运行）：%s" % e, flush=True)
 
 def _schedule_cos_db_sync():
+    global _cos_worker
     if not COS_ENABLED:
         return
     with _cos_sync_lock:
