@@ -1,2 +1,4 @@
-# 本应用仅使用 Python 标准库，无需第三方依赖。
-# 保留此文件以便 Render / Railway 等平台识别为 Python 项目。
+# 仅 openpyxl 与 COS SDK 为第三方依赖；其余均使用 Python 标准库。
+# 保留此文件以便 Render / Railway / CloudBase 等平台识别为 Python 项目。
+openpyxl==3.1.5
+cos-python-sdk-v5==1.9.30

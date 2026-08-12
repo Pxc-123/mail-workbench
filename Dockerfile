@@ -6,8 +6,8 @@ WORKDIR /app
 # 先装依赖（利用 Docker 缓存层）
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-# 显式确保 openpyxl 已安装（防止 requirements.txt 缓存/遗漏）
-RUN pip install --no-cache-dir openpyxl==3.1.5
+# 显式确保关键依赖已安装（防止 requirements.txt 缓存/遗漏）
+RUN pip install --no-cache-dir openpyxl==3.1.5 cos-python-sdk-v5==1.9.30
 
 # 复制应用代码
 COPY app.py /app/app.py

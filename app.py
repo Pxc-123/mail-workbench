@@ -16,6 +16,7 @@ import string
 import hashlib
 import datetime
 import threading
+import time
 import urllib.parse
 import csv
 import io
@@ -33,6 +34,168 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "workbench.db"))
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "..", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ---------------------------- COS 持久化同步 ----------------------------
+# 当配置了 COS 环境变量（COS_SECRET_ID / COS_SECRET_KEY / COS_REGION /
+# COS_BUCKET）时，数据库文件与附件会自动同步到腾讯云 COS 对象存储。
+# 这样即使 CloudBase 容器重部署 / 重启（本地文件系统是临时的），
+# 客户数据、发送日志和附件都不会丢失。未配置时以下函数均为空操作，
+# 不影响本地开发。
+def _cos_cfg_ok():
+    return all([
+        os.environ.get("COS_SECRET_ID"),
+        os.environ.get("COS_SECRET_KEY"),
+        os.environ.get("COS_REGION"),
+        os.environ.get("COS_BUCKET"),
+    ])
+
+COS_ENABLED = _cos_cfg_ok()
+COS_PREFIX = os.environ.get("COS_PREFIX", "mailwb/").strip()
+if COS_PREFIX and not COS_PREFIX.endswith("/"):
+    COS_PREFIX += "/"
+
+_cos_client = None
+_cos_client_lock = threading.Lock()
+_cos_sync_lock = threading.Lock()
+_cos_sync_pending = False
+_cos_worker = None
+
+def get_cos_client():
+    global _cos_client
+    if not COS_ENABLED:
+        return None
+    if _cos_client is None:
+        with _cos_client_lock:
+            if _cos_client is None:
+                try:
+                    from qcloud_cos import CosConfig, CosS3Client
+                    _cos_client = CosS3Client(CosConfig(
+                        Region=os.environ["COS_REGION"],
+                        SecretId=os.environ["COS_SECRET_ID"],
+                        SecretKey=os.environ["COS_SECRET_KEY"],
+                    ))
+                except Exception as e:
+                    print("[COS] 初始化失败：", e, flush=True)
+                    _cos_client = False
+    return _cos_client or None
+
+def _cos_db_key():
+    return COS_PREFIX + "workbench.db"
+
+def _cos_upload_file(local_path, cos_key):
+    client = get_cos_client()
+    if not client or not os.path.exists(local_path):
+        return False
+    try:
+        client.upload_file(Bucket=os.environ["COS_BUCKET"], LocalFilePath=local_path, Key=cos_key)
+        return True
+    except Exception as e:
+        print("[COS] 上传失败 %s: %s" % (cos_key, e), flush=True)
+        return False
+
+def cos_upload_db():
+    return _cos_upload_file(DB_PATH, _cos_db_key())
+
+def cos_upload_attachment(local_path):
+    rel = os.path.relpath(local_path, UPLOAD_DIR)
+    key = COS_PREFIX + "uploads/" + rel.replace(os.sep, "/")
+    return _cos_upload_file(local_path, key)
+
+def cos_download_db():
+    if not COS_ENABLED:
+        return False
+    client = get_cos_client()
+    if not client:
+        return False
+    tmp = DB_PATH + ".cosdl"
+    try:
+        resp = client.get_object(Bucket=os.environ["COS_BUCKET"], Key=_cos_db_key())
+        resp["Body"].get_stream_to_file(tmp)
+        os.replace(tmp, DB_PATH)
+        print("[COS] 数据库已从云端恢复", flush=True)
+        return True
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        print("[COS] 数据库下载失败（可能尚未存在）：", e, flush=True)
+        return False
+
+def cos_download_all_uploads():
+    if not COS_ENABLED:
+        return 0
+    client = get_cos_client()
+    if not client:
+        return 0
+    prefix = COS_PREFIX + "uploads/"
+    n = 0
+    try:
+        marker = ""
+        while True:
+            resp = client.list_objects(Bucket=os.environ["COS_BUCKET"], Prefix=prefix,
+                                       Marker=marker, MaxKeys=1000)
+            for item in (resp.get("Contents") or []):
+                key = item["Key"]
+                rel = key[len(prefix):]
+                if not rel or rel.endswith("/"):
+                    continue
+                dst = os.path.join(UPLOAD_DIR, rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    r = client.get_object(Bucket=os.environ["COS_BUCKET"], Key=key)
+                    r["Body"].get_stream_to_file(dst)
+                    n += 1
+                except Exception as e:
+                    print("[COS] 下载附件失败 %s: %s" % (key, e), flush=True)
+            if resp.get("IsTruncated") == "true":
+                marker = resp.get("NextMarker", "") or ""
+            else:
+                break
+        print("[COS] 已恢复 %d 个附件到本地" % n, flush=True)
+    except Exception as e:
+        print("[COS] 列举附件失败：", e, flush=True)
+    return n
+
+def cos_clear_uploads():
+    if not COS_ENABLED:
+        return
+    client = get_cos_client()
+    if not client:
+        return
+    prefix = COS_PREFIX + "uploads/"
+    try:
+        marker = ""
+        while True:
+            resp = client.list_objects(Bucket=os.environ["COS_BUCKET"], Prefix=prefix,
+                                       Marker=marker, MaxKeys=1000)
+            objs = [{"Key": i["Key"]} for i in (resp.get("Contents") or [])]
+            if objs:
+                client.delete_objects(Bucket=os.environ["COS_BUCKET"], Delete={"Object": objs})
+            if resp.get("IsTruncated") == "true":
+                marker = resp.get("NextMarker", "") or ""
+            else:
+                break
+    except Exception as e:
+        print("[COS] 清理云端附件失败：", e, flush=True)
+
+def _cos_worker_loop():
+    while True:
+        time.sleep(2)
+        with _cos_sync_lock:
+            if not _cos_sync_pending:
+                continue
+            _cos_sync_pending = False
+        cos_upload_db()
+
+def _schedule_cos_db_sync():
+    if not COS_ENABLED:
+        return
+    with _cos_sync_lock:
+        _cos_sync_pending = True
+        if _cos_worker is None:
+            _cos_worker = threading.Thread(target=_cos_worker_loop, daemon=True)
+            _cos_worker.start()
+
 # 内存会话表 token -> user_id
 SESSIONS = {}
 SESS_LOCK = threading.Lock()
@@ -42,7 +205,17 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _wrap_commit(conn)
     return conn
+
+def _wrap_commit(conn):
+    """包装 commit，使其在执行后自动把数据库同步到 COS（防重部署丢数据）。"""
+    orig = conn.commit
+    def commit(*a, **k):
+        r = orig(*a, **k)
+        _schedule_cos_db_sync()
+        return r
+    conn.commit = commit
 
 def init_db():
     conn = get_db()
@@ -769,6 +942,7 @@ class Handler(BaseHTTPRequestHandler):
                                     shutil.rmtree(fp)
                             except Exception:
                                 pass
+                    cos_clear_uploads()
                     for root, dirs, files in os.walk(up_src):
                         for fn in files:
                             src = os.path.join(root, fn)
@@ -776,6 +950,8 @@ class Handler(BaseHTTPRequestHandler):
                             dst = os.path.join(UPLOAD_DIR, rel)
                             os.makedirs(os.path.dirname(dst), exist_ok=True)
                             shutil.copy2(src, dst)
+                            cos_upload_attachment(dst)
+                    cos_upload_db()
                 return json_resp({"ok": True, "note": "数据库与附件已恢复，请刷新页面重新登录"})
             except Exception as e:
                 return json_resp({"error": "恢复失败：" + str(e)}, 500)
@@ -1000,6 +1176,8 @@ class Handler(BaseHTTPRequestHandler):
                         f.write(base64.b64decode(content))
                 else:
                     fpath = d.get("file_path") or ""
+                if os.path.exists(fpath):
+                    cos_upload_attachment(fpath)
                 conn.execute("INSERT INTO materials (user_id,exhibition_id,name,file_path,created_at) VALUES (?,?,?,?,?)",
                              (uid, ex_id, name, fpath, now_iso()))
                 conn.commit()
@@ -1544,7 +1722,14 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 def main():
+    if COS_ENABLED:
+        # 容器本地文件系统是临时的；启动时先从 COS 拉取最新数据库与附件
+        cos_download_db()
+        cos_download_all_uploads()
     init_db()
+    if COS_ENABLED:
+        # 把初始化后的库（含默认 admin 账号）推送到 COS，确保新部署也有备份
+        cos_upload_db()
     port = int(os.environ.get("PORT", 8000))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"✅ 销售邮件发送工作台已启动： http://127.0.0.1:{port}")
