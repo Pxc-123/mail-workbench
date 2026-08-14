@@ -627,31 +627,50 @@ def _normalize_date_text(s):
     return s
 
 def get_exhibition_profile(name, uid=None):
-    """优先读取用户在「展会资料库」维护的真实展会资料（城市/档期/简介），
-    没有再用内置检索资料。这样用户自己补充的展会描述也能驱动差异化文案。"""
-    if uid:
-        try:
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT name,city,date_text,note FROM exhibitions WHERE user_id=?", (uid,)
-            ).fetchall()
-            conn.close()
-            n = _norm_ex_name(name)
-            for r in rows:
-                rn = _norm_ex_name(r["name"])
-                if rn == n or rn in n or n in rn:
-                    city = r["city"] or ""
-                    date_hint = _normalize_date_text(r["date_text"] or "")
-                    note = (r["note"] or "").strip()
-                    return {
-                        "city": city, "date_hint": date_hint, "scale": "",
-                        "highlights": [note] if note else [],
-                        "openings": [],
-                        "_from_db": True,
-                    }
-        except Exception:
-            pass
-    return resolve_exhibition_profile(name)
+    """读取「展会资料库」中维护的真实展会资料（城市/档期/简介）。
+    展会资料库是共享资料，对所有账号生效：优先匹配本人维护的条目，
+    否则匹配任意条目（含全局/其他账号导入的）。
+    最终与内置检索资料（含真实亮点）做合并：内置亮点/规模优先保留，
+    DB 提供的真实城市/档期若有则覆盖，确保“不同展会不同亮点”且不全空。"""
+    builtin = resolve_exhibition_profile(name)  # 内置检索资料（真实亮点）
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT user_id,name,city,date_text,note FROM exhibitions"
+        ).fetchall()
+        conn.close()
+        n = _norm_ex_name(name)
+        best = None
+        for r in rows:
+            rn = _norm_ex_name(r["name"])
+            if rn == n or rn in n or n in rn:
+                cand = {
+                    "city": r["city"] or "",
+                    "date_hint": _normalize_date_text(r["date_text"] or ""),
+                    "scale": "",
+                    "highlights": [(r["note"] or "").strip()] if (r["note"] or "").strip() else [],
+                    "openings": [],
+                    "_from_db": True,
+                }
+                if r["user_id"] == (uid or -1):  # 优先本人维护的
+                    best = cand
+                    break
+                if best is None:
+                    best = cand
+        if best is not None or builtin:
+            merged = dict(builtin)  # 先铺内置（含真实亮点/规模）
+            if best:
+                if best["city"]:
+                    merged["city"] = best["city"]
+                if best["date_hint"]:
+                    merged["date_hint"] = best["date_hint"]
+                if best["highlights"]:
+                    merged["highlights"] = best["highlights"]
+                merged["_from_db"] = True
+            return merged
+    except Exception:
+        pass
+    return builtin
 
 # 差异化开场白池(随机选取避免雷同)
 OPENING_VARIANTS = [
