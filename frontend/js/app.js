@@ -143,7 +143,7 @@ function enterApp() {
   $("#cur-user").textContent = USER.display_name || USER.username;
   const navAdmin = $("#nav-admin");
   if (navAdmin) navAdmin.style.display = (USER && USER.role === "admin" && window.__MODE === "backend") ? "block" : "none";
-  loadSettings().then(() => { bindNav(); render(); refreshBell(); });
+  loadSettings().then(() => { bindNav(); render(); refreshBell(); setupGlobalSearch(); });
 }
 async function loadSettings() {
   try { const r = await api("GET", "/api/settings"); SETTINGS = r.data || {}; } catch (e) {}
@@ -187,12 +187,80 @@ function render() {
 function viewHome() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "首页工作台"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "待办事项提醒 · 悬浮日历可把待办绑定到具体日期"));
   const grid = el("div", { class: "grid2" });
-  grid.appendChild(card("📝 待办清单", todoPanel()));
-  grid.appendChild(card("📅 日历 / 绑定待办", calendarPanel(false)));
+  grid.appendChild(card("📋 今日待办", todoPanel()));
+  grid.appendChild(card("👥 客户跟踪情况", customerTrackingPanel()));
   wrap.appendChild(grid);
   return wrap;
+}
+
+/* 客户状态配置 */
+const CUSTOMER_STATUS = {
+  "成交客户": { color: "#dc2626", bg: "#fef2f2", label: "成交" },
+  "高度意向": { color: "#f59e0b", bg: "#fffbeb", label: "高意向" },
+  "意向客户": { color: "#3b82f6", bg: "#eff6ff", label: "意向" },
+  "潜在客户": { color: "#6b7280", bg: "#f9fafb", label: "潜在" },
+};
+const STATUS_OPTIONS = Object.keys(CUSTOMER_STATUS);
+
+/* 客户跟踪仪表盘 */
+async function customerTrackingPanel() {
+  const box = el("div");
+  box.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8">加载中…</div>';
+  try {
+    const r = await api("GET", "/api/customers/stats");
+    const stats = r.data || { total: 0, by_status: [] };
+    const total = stats.total || 0;
+    box.innerHTML = "";
+    if (!total) {
+      box.appendChild(el("div", { class: "empty" }, "暂无客户，去「客户管理」添加吧"));
+      return box;
+    }
+    // 状态分布概览（带颜色的卡片）
+    const statGrid = el("div", { class: "stat-grid" });
+    let statusMap = {};
+    (stats.by_status || []).forEach(s => { statusMap[s.s || s.status || "潜在客户"] = s.c || s.count || 0; });
+    // 补齐所有状态（包括数量为0的）
+    STATUS_OPTIONS.forEach(s => { if (!(s in statusMap)) statusMap[s] = 0; });
+    STATUS_OPTIONS.forEach(s => {
+      const cfg = CUSTOMER_STATUS[s];
+      const count = statusMap[s] || 0;
+      const pct = total > 0 ? Math.round(count / total * 100) : 0;
+      const cardEl = el("div", { class: "stat-card", style: `border-left:4px solid ${cfg.color};background:${cfg.bg}` });
+      cardEl.appendChild(el("div", { class: "stat-count", style: `color:${cfg.color}` }, String(count)));
+      cardEl.appendChild(el("div", { class: "stat-label" }, s));
+      cardEl.appendChild(el("div", { class: "stat-pct" }, `占比 ${pct}%`));
+      // 点击跳转到客户列表
+      cardEl.style.cursor = "pointer";
+      cardEl.onclick = () => { STATE.view = "cust"; STATE.sub = "list"; render(); };
+      statGrid.appendChild(cardEl);
+    });
+    box.appendChild(statGrid);
+    // 快捷操作提示
+    box.appendChild(el("div", { class: "section-sub", style: "margin-top:12px" }, "💡 点击状态卡片可跳转到客户列表，在列表中可编辑每位客户的状态"));
+    // 最近更新的3个客户预览
+    try {
+      const cr = await api("GET", "/api/customers");
+      const recent = (cr.data || []).slice(0, 5);
+      if (recent.length) {
+        box.appendChild(el("div", { class: "section-sub", style: "margin-top:14px" }, "最近添加的客户"));
+        const list = el("div", { class: "recent-cust-list" });
+        recent.forEach(c => {
+          const st = c.status || "潜在客户";
+          const cfg = CUSTOMER_STATUS[st] || CUSTOMER_STATUS["潜在客户"];
+          const row = el("div", { class: "recent-cust-item" });
+          row.appendChild(el("span", { class: "pill", style: `background:${cfg.color};color:#fff;font-size:11px` }, cfg.label));
+          row.appendChild(el("span", {}, c.company || "-"));
+          row.appendChild(el("span", { class: "muted", style: "font-size:11px;margin-left:auto" }, c.contact || c.email || ""));
+          list.appendChild(row);
+        });
+        box.appendChild(list);
+      }
+    } catch(e) {}
+  } catch(e) {
+    box.innerHTML = `<div style="color:#ef4444;padding:10px">加载失败：${e.message}</div>`;
+  }
+  return box;
 }
 function todoPanel() {
   const box = el("div");
@@ -218,9 +286,20 @@ function todoPanel() {
 async function loadTodos(target) {
   const r = await api("GET", "/api/todos");
   const list = r.data || [];
+  const today = todayStr();
+  // 只显示当天的待办（bind_date == today 或 due_time 是今天 或 无日期的也显示）
+  const todayList = list.filter(t => {
+    if (t.done) return false; // 已完成的不显示
+    if (t.bind_date === today) return true;
+    if (t.due_time && t.due_time.startsWith(today)) return true;
+    // 无绑定日期且未过期的也显示
+    if (!t.bind_date && !t.due_time) return true;
+    if (!t.bind_date && t.due_time) { const d = new Date(t.due_time.replace(" ", "T")); return d >= new Date(today); }
+    return false;
+  });
   target.innerHTML = "";
-  if (!list.length) { target.appendChild(el("div", { class: "empty" }, "暂无待办，上方添加一条吧")); return; }
-  list.forEach(t => {
+  if (!todayList.length) { target.appendChild(el("div", { class: "empty" }, "🎉 今天没有待办事项，工作轻松！")); return; }
+  todayList.forEach(t => {
     const item = el("div", { class: "todo-item" + (t.done ? " done" : "") });
     const chk = el("input", { class: "chk", type: "checkbox" }); chk.checked = !!t.done;
     chk.onchange = async () => { await api("PATCH", "/api/todos/" + t.id, { done: chk.checked ? 1 : 0 }); render(); refreshBell(); };
@@ -394,8 +473,29 @@ function viewGen() {
   const tnSel = el("select", { class: "inp" }, TONES.map(t => el("option", { value: t }, t)));
   left.appendChild(tnSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "5. 自定义补充（粘贴新闻/卖点素材，AI 会融入邮件）"));
-  const custom = el("textarea", { class: "inp", placeholder: "例：加上欧盟 PPWR 包装法规新闻，重点突出展位余量不多。" });
+  const custom = el("textarea", { class: "inp", id: "cfg-custom", placeholder: "例：加上欧盟 PPWR 包装法规新闻，重点突出展位余量不多。" });
   left.appendChild(custom);
+  // 「获取最新资讯」按钮：调用后端抓取真实行业新闻，填入自定义补充框
+  const newsBtn = el("button", { class: "btn", style: "margin-top:6px;font-size:12px" }, "🔍 获取最新行业资讯（真实新闻）");
+  newsBtn.onclick = async () => {
+    newsBtn.disabled = true; newsBtn.textContent = "⏳ 搜索中…";
+    try {
+      const r = await api("GET", "/api/news/search?q=" + encodeURIComponent("食品包装机械 海外市场 出展 2026"));
+      if (r.data && r.data.items && r.data.items.length) {
+        const items = r.data.items;
+        const sourceNote = r.data.note ? `【${r.data.note}】` : `（来源：${r.data.source || "网络"}）`;
+        let text = "【最新行业资讯】" + sourceNote + "\n\n" + items.map((it, i) => `${i + 1}. ${it}`).join("\n");
+        custom.value = text;
+        toast(`已加载 ${items.length} 条资讯`);
+      } else {
+        toast("未搜索到相关资讯，请手动输入");
+      }
+    } catch(e) {
+      toast("获取资讯失败：" + e.message);
+    }
+    newsBtn.disabled = false; newsBtn.textContent = "🔍 获取最新行业资讯（真实新闻）";
+  };
+  left.appendChild(newsBtn);
   const gen = el("button", { class: "btn btn-primary btn-block", style: "margin-top:14px" }, "⚡ AI 一键生成邮件");
   gen.onclick = async () => {
     gen.textContent = "生成中…"; gen.disabled = true;
@@ -792,7 +892,7 @@ async function renderCustomerTable(target) {
   target.innerHTML = "";
   if (!list.length) { target.appendChild(el("div", { class: "empty" }, "暂无客户，点击「新增」或「批量导入」")); return; }
   const t = el("table", { class: "tbl" });
-  t.appendChild(el("tr", {}, ["", "客户公司", "联系人", "邮箱", "手机号", "意向展会", "标签", "操作"].map(h => el("th", {}, h))));
+  t.appendChild(el("tr", {}, ["", "客户公司", "联系人", "邮箱", "手机号", "意向展会", "状态", "标签", "操作"].map(h => el("th", {}, h))));
   list.forEach(c => {
     const tr = el("tr");
     const chk = el("input", { type: "checkbox", class: "cust-chk", value: String(c.id) });
@@ -808,6 +908,14 @@ async function renderCustomerTable(target) {
     tr.appendChild(el("td", {}, c.email || "-"));
     tr.appendChild(el("td", {}, c.phone || "-"));
     tr.appendChild(el("td", {}, c.exhibition || "-"));
+    // 状态列（颜色标记）
+    const st = c.status || "潜在客户";
+    const cfg = CUSTOMER_STATUS[st] || CUSTOMER_STATUS["潜在客户"];
+    const stTd = el("td");
+    const stBadge = el("span", { class: "pill", style: `background:${cfg.color};color:#fff;font-size:11px;font-weight:600` }, cfg.label);
+    if (st === "成交客户") stBadge.style.cssText += ";animation:pulse-red 1.5s infinite;";
+    stTd.appendChild(stBadge);
+    tr.appendChild(stTd);
     tr.appendChild(el("td", {}, (c.tags || "").split(",").filter(Boolean).map(tg => `<span class="pill">${esc(tg)}</span>`).join("") || "-"));
     const td = el("td");
     const editBtn = el("button", { class: "btn btn-sm" }, "编辑");
@@ -822,32 +930,37 @@ async function renderCustomerTable(target) {
   target.appendChild(t);
 }
 function addCustomerModal() {
+  const statusOpts = STATUS_OPTIONS.map(s => `<option value="${s}">${s}</option>`).join("");
   const html = `<div class="cfg-row"><label>客户公司 *</label><input id="c-company" class="inp"></div>
     <div class="cfg-row"><label>联系人</label><input id="c-contact" class="inp"></div>
     <div class="cfg-row"><label>邮箱</label><input id="c-email" class="inp"></div>
     <div class="cfg-row"><label>手机号</label><input id="c-phone" class="inp"></div>
     <div class="cfg-row"><label>意向展会</label><input id="c-ex" class="inp"></div>
+    <div class="cfg-row"><label>客户状态</label><select id="c-status" class="inp">${statusOpts}</select></div>
     <div class="cfg-row"><label>客户标签（逗号分隔）</label><input id="c-tags" class="inp" placeholder="预制菜客户,高意向"></div>
     <button class="btn btn-primary btn-block" id="c-save">保存</button>`;
   openModal("新增客户", html);
   $("#c-save").onclick = async () => {
     if (!$("#c-company").value.trim()) { toast("客户公司必填"); return; }
-    await api("POST", "/api/customers", { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, tags: $("#c-tags").value });
+    await api("POST", "/api/customers", { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, status: $("#c-status").value, tags: $("#c-tags").value });
     closeModal(); toast("客户已添加"); render();
   };
 }
 function editCustomerModal(c, target) {
+  const curStatus = c.status || "潜在客户";
+  const statusOpts = STATUS_OPTIONS.map(s => `<option value="${s}" ${s === curStatus ? "selected" : ""}>${s}</option>`).join("");
   const html = `<div class="cfg-row"><label>客户公司 *</label><input id="c-company" class="inp" value="${esc(c.company || "")}"></div>
     <div class="cfg-row"><label>联系人</label><input id="c-contact" class="inp" value="${esc(c.contact || "")}"></div>
     <div class="cfg-row"><label>邮箱</label><input id="c-email" class="inp" value="${esc(c.email || "")}"></div>
     <div class="cfg-row"><label>手机号</label><input id="c-phone" class="inp" value="${esc(c.phone || "")}"></div>
     <div class="cfg-row"><label>意向展会</label><input id="c-ex" class="inp" value="${esc(c.exhibition || "")}"></div>
+    <div class="cfg-row"><label>客户状态</label><select id="c-status" class="inp">${statusOpts}</select></div>
     <div class="cfg-row"><label>客户标签（逗号分隔）</label><input id="c-tags" class="inp" placeholder="预制菜客户,高意向" value="${esc(c.tags || "")}"></div>
     <button class="btn btn-primary btn-block" id="c-save">保存修改</button>`;
   openModal("编辑客户", html);
   $("#c-save").onclick = async () => {
     if (!$("#c-company").value.trim()) { toast("客户公司必填"); return; }
-    await api("PUT", "/api/customers/" + c.id, { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, tags: $("#c-tags").value });
+    await api("PUT", "/api/customers/" + c.id, { company: $("#c-company").value.trim(), contact: $("#c-contact").value, email: $("#c-email").value, phone: $("#c-phone").value, exhibition: $("#c-ex").value, status: $("#c-status").value, tags: $("#c-tags").value });
     closeModal(); toast("客户已更新"); if (target) renderCustomerTable(target); else render();
   };
 }
@@ -1517,4 +1630,91 @@ window.addEventListener("unhandledrejection", function(e) {
   if (m) m.textContent = "⚠️ 连接异常: " + (e.reason?.message || String(e.reason));
 });
 function init() { if (TOKEN && USER) enterApp(); else showAuth(); }
+
+/* ---------- 全局搜索（顶栏 搜索客户/模板/展会…）---------- */
+let _searchTimer = null;
+let _searchResults = [];
+function setupGlobalSearch() {
+  const inp = $("#global-search");
+  if (!inp) return;
+  // 搜索结果下拉容器
+  let dropdown = null;
+  function showDropdown(items) {
+    if (!dropdown) {
+      dropdown = el("div", { id: "search-dropdown", class: "search-dropdown" });
+      document.body.appendChild(dropdown);
+    }
+    dropdown.innerHTML = "";
+    if (!items.length) { dropdown.style.display = "none"; return; }
+    items.forEach(it => {
+      const row = el("div", { class: "search-result-item" });
+      const tag = el("span", { class: "search-result-tag", style: `background:${it.color || "#6366f1"}` }, it.type);
+      row.appendChild(tag);
+      row.appendChild(el("span", {}, it.label));
+      row.onclick = () => {
+        dropdown.style.display = "none";
+        inp.value = "";
+        STATE.view = it.view; STATE.sub = it.sub || defaultSub(it.view); render();
+        // 如果有回调（如高亮某行），延迟执行等DOM渲染完
+        if (it.cb) setTimeout(it.cb, 100);
+      };
+      dropdown.appendChild(row);
+    });
+    dropdown.style.display = "block";
+    // 定位到输入框下方
+    const rect = inp.getBoundingClientRect();
+    dropdown.style.top = (rect.bottom + window.scrollY + 4) + "px";
+    dropdown.style.left = rect.left + "px";
+    dropdown.style.width = rect.width + "px";
+  }
+  inp.oninput = () => {
+    clearTimeout(_searchTimer);
+    const kw = inp.value.trim().toLowerCase();
+    if (!kw.length) { showDropdown([]); return; }
+    _searchTimer = setTimeout(async () => {
+      const results = [];
+      // 搜索客户
+      try {
+        const r = await api("GET", "/api/customers");
+        (r.data || []).filter(c =>
+          (c.company || "").toLowerCase().includes(kw) ||
+          (c.contact || "").toLowerCase().includes(kw) ||
+          (c.email || "").toLowerCase().includes(kw)
+        ).slice(0, 5).forEach(c => results.push({
+          type: "👥 客户", label: `${c.company} / ${c.contact || "-"} / ${c.email || "-"}`,
+          color: "#10b981", view: "cust", sub: "list",
+          cb: () => { /* 高亮该客户 */ }
+        }));
+      } catch(e) {}
+      // 搜索展会
+      try {
+        const r = await api("GET", "/api/exhibitions");
+        (r.data || []).filter(e => (e.name || "").toLowerCase().includes(kw)).slice(0, 4).forEach(e => results.push({
+          type: "📁 展会", label: `${e.name} (${e.city || ""} ${e.date_text || ""})`,
+          color: "#f59e0b", view: "expo", sub: "mat"
+        }));
+      } catch(e) {}
+      // 搜索模板
+      try {
+        const r = await api("GET", "/api/templates");
+        (r.data || []).filter(t => (t.name || "").toLowerCase().includes(kw) || (t.exhibition || "").toLowerCase().includes(kw)).slice(0, 4).forEach(t => results.push({
+          type: "📧 模板", label: `${t.name} [${t.scene || ""}]`,
+          color: "#8b5cf6", view: "ai", sub: "tpl"
+        }));
+      } catch(e) {}
+      _searchResults = results;
+      showDropdown(results);
+      if (!results.length) showDropdown([{type:"无结果", label:`未找到与「${inp.value.trim()}」相关的内容`,color:"#94a3b8",view:"",sub:"",cb:null}]);
+    }, 300);
+  };
+  // 点击外部关闭下拉
+  document.addEventListener("click", e => {
+    if (dropdown && e.target !== inp && !dropdown.contains(e.target)) dropdown.style.display = "none";
+  });
+  // ESC 关闭
+  inp.addEventListener("keydown", e => { if (e.key === "Escape") { inp.value = ""; showDropdown([]); } });
+}
+
 init();
+// 登录后初始化全局搜索
+const _origEnterApp = typeof enterApp === "function" ? enterApp : null;

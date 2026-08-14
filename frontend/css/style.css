@@ -144,3 +144,27 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .status-fail{color:var(--err);font-weight:700}
 .flex{display:flex;gap:10px;align-items:center}
 .spacer{flex:1}
+
+/* ===== 全局搜索下拉 ===== */
+.search-dropdown{position:fixed;z-index:190;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15);max-height:320px;overflow-y:auto;display:none}
+.search-result-item{display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer;transition:background .15s;border-bottom:1px solid #f3f4f6;font-size:13px}
+.search-result-item:last-child{border-bottom:none}
+.search-result-item:hover{background:#f0f5ff}
+.search-result-tag{font-size:11px;padding:2px 8px;border-radius:10px;color:#fff;white-space:nowrap}
+
+/* ===== 客户跟踪仪表盘 ===== */
+.stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}
+.stat-card{padding:14px;border-radius:10px;border:1px solid var(--line);cursor:pointer;transition:transform .15s,box-shadow .15s}
+.stat-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.08)}
+.stat-count{font-size:28px;font-weight:800;line-height:1.1}
+.stat-label{font-size:12.5px;color:var(--sub);margin-top:2px;font-weight:600}
+.stat-pct{font-size:11px;color:var(--sub);margin-top:2px;opacity:.7}
+.recent-cust-list{margin-top:8px}
+.recent-cust-item{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
+.recent-cust-item:last-child{border-bottom:none}
+
+/* 成交客户脉冲动画 */
+@keyframes pulse-red{
+  0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.35)}
+  50%{box-shadow:0 0 0 6px rgba(220,38,38,0)}
+}

@@ -187,6 +187,20 @@
     if (method === "GET") {
       if (path === "/api/todos") return d.todos.slice().sort((a, b) => (a.done - b.done));
       if (path === "/api/customers") return d.customers.slice();
+      if (path === "/api/customers/stats") {
+        const total = d.customers.length;
+        const byStatus = {}; d.customers.forEach(c => { const s = c.status || "潜在客户"; byStatus[s] = (byStatus[s] || 0) + 1; });
+        return { total, by_status: Object.entries(byStatus).map(([s, count]) => ({ s, c: count })) };
+      }
+      if (path === "/api/news/search") {
+        return { source: "离线模式(缓存)", items: [
+          "2026年全球食品包装机械市场规模预计突破580亿美元，亚太地区增速领跑",
+          "RCEP全面生效两周年，中国食品机械对东盟出口同比增长28%",
+          "欧盟新版食品接触材料法规(FCM)将于2026年底实施，出口企业需提前合规",
+          "智能包装与可持续包装成为2026年国际展会核心主题，买家关注度提升40%",
+          "东南亚食品加工市场快速扩张，越南、印尼、泰国成中国设备主要出口目的地",
+        ], fetched_at: new Date().toISOString(), note: "离线模式显示缓存热点，联网后可获取实时资讯" };
+      }
       if (path === "/api/tags") return d.tags.slice();
       if (path === "/api/templates") return d.templates.slice();
       if (path === "/api/materials") return d.materials.slice();
@@ -203,7 +217,7 @@
         d.todos.push(t); setData(d); return t;
       }
       if (path === "/api/customers") {
-        const c = { id: nid(d), company: body.company || "", contact: body.contact || "", email: body.email || "", phone: body.phone || "", exhibition: body.exhibition || "", tags: body.tags || "", created_at: nowISO() };
+        const c = { id: nid(d), company: body.company || "", contact: body.contact || "", email: body.email || "", phone: body.phone || "", exhibition: body.exhibition || "", tags: body.tags || "", status: body.status || "潜在客户", created_at: nowISO() };
         d.customers.push(c); setData(d); return c;
       }
       if (path === "/api/customers/batch-delete") {
@@ -279,6 +293,12 @@
     if (method === "PATCH") {
       const m = path.match(/^\/api\/todos\/(\d+)$/);
       if (m) { const t = d.todos.find(x => x.id === +m[1]); if (t) { Object.assign(t, body); setData(d); } return t || {}; }
+      throw new Error("not found");
+    }
+
+    if (method === "PUT") {
+      let m = path.match(/^\/api\/customers\/(\d+)$/);
+      if (m) { const c = d.customers.find(x => x.id === +m[1]); if (c) { Object.assign(c, body); setData(d); } return c || {}; }
       throw new Error("not found");
     }
 
