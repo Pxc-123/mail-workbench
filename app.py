@@ -658,7 +658,8 @@ def get_exhibition_profile(name, uid=None):
                 if best is None:
                     best = cand
         if best is not None or builtin:
-            merged = dict(builtin)  # 先铺内置（含真实亮点/规模）
+            merged = {"city": "", "date_hint": "", "scale": "", "highlights": [], "openings": []}
+            merged.update(builtin)  # 先铺内置（含真实亮点/规模）
             if best:
                 if best["city"]:
                     merged["city"] = best["city"]
