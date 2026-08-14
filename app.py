@@ -614,6 +614,18 @@ def resolve_exhibition_profile(name):
             return v
     return {}
 
+def _normalize_date_text(s):
+    """把 Excel 序列号（如 46508）统一为 YYYY-MM-DD；已合规或无法识别则原样返回。"""
+    if not s:
+        return s
+    s = str(s).strip()
+    if re.match(r"^\d{4,6}$", s):
+        try:
+            return (datetime.datetime(1899, 12, 30) + datetime.timedelta(days=int(s))).strftime("%Y-%m-%d")
+        except Exception:
+            return s
+    return s
+
 def get_exhibition_profile(name, uid=None):
     """优先读取用户在「展会资料库」维护的真实展会资料（城市/档期/简介），
     没有再用内置检索资料。这样用户自己补充的展会描述也能驱动差异化文案。"""
@@ -629,7 +641,7 @@ def get_exhibition_profile(name, uid=None):
                 rn = _norm_ex_name(r["name"])
                 if rn == n or rn in n or n in rn:
                     city = r["city"] or ""
-                    date_hint = r["date_text"] or ""
+                    date_hint = _normalize_date_text(r["date_text"] or "")
                     note = (r["note"] or "").strip()
                     return {
                         "city": city, "date_hint": date_hint, "scale": "",
@@ -667,7 +679,7 @@ def _build_ex_info(ex, profile):
     if profile.get("city"):
         lines.append(f"📍 举办地：{profile['city']}")
     if profile.get("date_hint"):
-        lines.append(f"📅 展期：{profile['date_hint']}")
+        lines.append(f"📅 展期：{_normalize_date_text(profile['date_hint'])}")
     if profile.get("scale"):
         lines.append(f"📊 规模：{profile['scale']}")
     hl = profile.get("highlights") or []
@@ -1457,6 +1469,24 @@ class Handler(BaseHTTPRequestHandler):
                         vals.append(v)
                 if fields:
                     conn.execute(f"UPDATE customers SET {','.join(fields)} WHERE id=? AND user_id=?", vals+[cid, uid])
+                    conn.commit()
+                return json_resp({"ok": True})
+            if path.startswith("/api/exhibitions/"):
+                eid = path.split("/")[-1]
+                fields = []
+                vals = []
+                for k in ("name", "city", "date_text", "note"):
+                    if k in d:
+                        v = d[k]
+                        if k == "date_text":
+                            v = _normalize_date_text(v)
+                        fields.append(f"{k}=?")
+                        vals.append(v)
+                if fields:
+                    # 同时允许修改全局展会(user_id=0)与本人维护的展会
+                    conn.execute(
+                        f"UPDATE exhibitions SET {','.join(fields)} WHERE id=? AND (user_id=? OR user_id=0)",
+                        vals + [eid, uid])
                     conn.commit()
                 return json_resp({"ok": True})
             if path.startswith("/api/templates/"):
