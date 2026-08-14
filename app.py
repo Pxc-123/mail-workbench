@@ -436,6 +436,9 @@ SCENE_LABELS = {
     "3": "通知展位余量紧张催单",
     "4": "通知创新大奖申报截止提醒",
     "5": "展会补贴政策通知",
+    "6": "发送参展报价方案",
+    "7": "客户跟进回访",
+    "8": "参展感谢与维系",
 }
 TONE_LABELS = {"正式商务": "正式商务", "简洁干练": "简洁干练", "温和友好": "温和友好", "简短": "简短"}
 
@@ -448,6 +451,8 @@ TYPE_INTRO = {
 }
 
 # 展会特色数据(用于生成差异化文案)
+# 说明：以下数据基于公开网络检索（各展会官网 / 行业资讯）整理，覆盖城市、档期、
+# 规模、核心亮点与差异化的开场白，确保不同展会生成出来的邮件内容各不相同。
 EXHIBITION_PROFILES = {
     "SIAL 巴黎食品展": {
         "city": "法国巴黎", "date_hint": "2026年10月", "scale": "全球最大食品展之一，70+国家参展商，30万+专业观众",
@@ -494,7 +499,147 @@ EXHIBITION_PROFILES = {
             "THAIFEX 独特的'酒店+零售'双渠道买家结构，让参展效果倍增。",
         ],
     },
+    # ----------------- 包装机械 / 食品加工技术类（联网检索整理） -----------------
+    "Interpack": {
+        "city": "德国杜塞尔多夫", "date_hint": "2026年5月7-13日", "scale": "全球最大包装技术展，2800+展商来自67国，17万+专业观众",
+        "highlights": ["智能智造与AI驱动产线", "欧洲PPWR包装法规落地前沿", "循环经济与可持续材料", "初创专区22家新锐企业"],
+        "openings": [
+            "Interpack 2026 刚于5月在杜塞尔多夫落幕，作为全球包装技术的'奥林匹克'，它集中展示了从智能产线到可持续材料的全产业链创新——这正是贵司设备触达欧洲买家的最佳参照窗口。",
+            "每届 Interpack 都有 2800+ 展商、17万+ 观众，74% 展商来自境外，是包装机械企业进入欧洲市场不可替代的平台。",
+            "今年 Interpack 的核心命题是 PPWR 法规与循环经济，欧洲买家对高效、合规的包装设备需求空前迫切，这正是贵司的强项。",
+        ],
+    },
+    "ProPak China": {
+        "city": "中国上海（国家会展中心）", "date_hint": "2026年6月15-17日", "scale": "20万㎡全产业链盛会，2500+展商来自135国，12万+专业观众",
+        "highlights": ["包装机械+食品加工一站式", "智能装备与机器人产线", "覆盖食品饮料乳品日化制药", "四展联动贯通上下游"],
+        "openings": [
+            "ProPak China & FoodPack China 2026 将于6月在上海国家会展中心举办，20万㎡、2500+ 展商，是亚太规模最大的加工包装联展，贵司的装备能在这里直面全球采购商。",
+            "本届联展以'马跃新程·智链未来'为主题，八大主题板块聚焦前沿科技与落地方案，对贵司这样的设备厂商是绝佳的曝光舞台。",
+            "上海加工包装联展背靠长三角制造集群，买家覆盖食品、饮料、乳品、日化、制药等全行业，参展即等于一次精准的渠道总动员。",
+        ],
+    },
+    "Gulfood Manufacturing": {
+        "city": "阿联酋迪拜（世界贸易中心）", "date_hint": "2026年11月3-5日", "scale": "中东最大食品制造展，2500+展商来自79国，6.1万+专业观众，21个馆",
+        "highlights": ["中东/非洲食品制造枢纽", "加工·包装·配料·自动化全链", "阿联酋粮食安全战略驱动", "GulfHost/自有品牌/糖果展同馆"],
+        "openings": [
+            "Gulfood Manufacturing 是中东地区最具影响力的食品饮料制造展，迪拜正借'2051粮食安全战略'大力扶持本地化生产，对包装与加工设备需求井喷。",
+            "2026 年海湾食品加工展将于11月在迪拜世贸中心举办，2500+ 全球展商、21个展馆，是中企切入中东+非洲市场的核心跳板。",
+            "阿联酋食品市场进口依赖度高达80%-90%，同时转向本地化智造——这意味着贵司的包装机械在迪拜有着确定性的刚需。",
+        ],
+    },
+    "Anuga FoodTec": {
+        "city": "德国科隆", "date_hint": "2027年2月23-26日", "scale": "全球食品加工技术标杆展，1300+展商，4万+观众来自130国",
+        "highlights": ["Smart·Safe·Sustainable 主题", "AI与数字化工厂", "Inline检测与全程可追溯", "循环经济与节能降耗"],
+        "openings": [
+            "Anuga FoodTec 2027 将于2月在科隆举办，主题'Navigate Complexity——智能、安全、可持续'，是全球食品饮料技术最重要的风向标。",
+            "作为每三年一届的技术标杆展，Anuga FoodTec 汇聚1300+ 展商、4万+ 来自130国的观众，是贵司对接欧洲高端食品工程客户的必争之地。",
+            "今年展会聚焦 AI、数字孪生与端到端可追溯，欧洲买家对'聪明又合规'的产线方案求贤若渴，这恰是贵司技术的用武之地。",
+        ],
+    },
+    "PACK EXPO": {
+        "city": "美国芝加哥（麦考密克）", "date_hint": "2026年10月18-21日", "scale": "北美最大包装展，2600展商，4.8万+专业观众，两年一届",
+        "highlights": ["北美市场订单质量高", "智能包装与减塑轻量化", "覆盖40+垂直行业", "食品医药日化采购集中"],
+        "openings": [
+            "PACK EXPO International 2026 将于10月在芝加哥举办，是北美规模最大的包装旗舰展，北美买家对自动化、可持续与智能包装需求强劲。",
+            "作为两年一届的北美包装盛会，PACK EXPO 汇聚2600家展商、4.8万专业观众，是中国包装设备打入美洲市场的高效通道。",
+            "当前北美正加速向'减塑、轻量化、高效产线'转型，贵司在高速立式包装机、AI视觉质检等领域的优势正对买家胃口。",
+        ],
+    },
+    "ProPak Asia": {
+        "city": "泰国曼谷（IMPACT）", "date_hint": "2026年6月10-13日", "scale": "东南亚最大加工包装展，2500+品牌来自45国，6.5万㎡",
+        "highlights": ["东盟加工包装旗舰展", "AI自动化与智慧工厂", "冷链与创新可持续包装", "15个国际展团同台"],
+        "openings": [
+            "ProPak Asia 2026 将于6月在曼谷 IMPACT 举办，是东南亚最大的食品加工与包装技术展，2500+ 品牌来自45国，是中企扎根东盟的门户。",
+            "今年展会面积扩大20%至6.5万㎡，聚焦 AI 自动化、冷链与可持续包装，RCEP 红利下东盟买家采购意愿持续走强。",
+            "曼谷作为东盟制造中心，ProPak Asia 的买家辐射泰国、越南、马来、新加坡，参展一次即可覆盖整个东南亚渠道。",
+        ],
+    },
+    "FHA Food & Beverage": {
+        "city": "新加坡博览中心", "date_hint": "2026年4月21-24日", "scale": "亚太最大食品饮料展，2750+展商来自115国，8万+观众，10万㎡",
+        "highlights": ["东盟采购枢纽门户", "欧盟'荣誉展区'背书", "FutureFWD食品科技专区", "契合新加坡30×30国策"],
+        "openings": [
+            "FHA Food & Beverage 2026 将于4月在新加坡举办，是亚太规模最大的食品饮料 B2B 展，2750+ 展商、8万+ 观众，是中企进军东盟的总入口。",
+            "新加坡是东盟的战略枢纽与转口贸易中心，FHA 汇聚115国买家，贵司可借此一站触达东南亚分销与零售巨头。",
+            "今年欧盟作为'荣誉展区'亮相，加上 FutureFWD 食品科技专区，FHA 已成为亚洲食品创新与贸易配对的核心舞台。",
+        ],
+    },
+    "IPACK-IMA": {
+        "city": "意大利米兰（Fiera Milano）", "date_hint": "2026年5月27-30日", "scale": "欧洲第二大包装展，13万㎡，1300+展商，7万+观众",
+        "highlights": ["欧洲高端包装市场精准对接", "智能与绿色包装技术", "契合欧盟PPWR新法规", "中意经贸合作深化"],
+        "openings": [
+            "IPACK-IMA 2026 将于5月在米兰举办，是欧洲第二大包装与食品加工展，13万㎡、1300+ 展商，直通意大利及南欧高端市场。",
+            "米兰依托欧盟统一市场与高端制造底蕴，IPACK-IMA 对智能、绿色包装技术需求旺盛，是贵司对接欧洲高端终端的桥梁。",
+            "在欧盟 PPWR 新法规背景下，欧洲买家急需合规又高效的包装产线，这恰是贵司技术切入意大利市场的窗口。",
+        ],
+    },
 }
+
+# 别名映射：让用户即使输入简称/中文名也能命中对应展会资料（大小写、空格、连字符均已归一化）
+EXHIBITION_ALIASES = {
+    "interpack": "Interpack", "interpack2026": "Interpack", "杜塞尔多夫包装展": "Interpack", "杜塞尔多夫": "Interpack",
+    "propak china": "ProPak China", "propakchina": "ProPak China", "上海加工包装展": "ProPak China",
+    "上海国际食品加工与包装机械展": "ProPak China", "上海包装展": "ProPak China",
+    "gulfood manufacturing": "Gulfood Manufacturing", "gulfoodmanufacturing": "Gulfood Manufacturing",
+    "迪拜海湾食品工业展": "Gulfood Manufacturing", "迪拜包装展": "Gulfood Manufacturing", "迪拜食品制造展": "Gulfood Manufacturing",
+    "anuga foodtec": "Anuga FoodTec", "anugafoodtec": "Anuga FoodTec", "科隆食品加工展": "Anuga FoodTec", "科隆食品技术展": "Anuga FoodTec",
+    "pack expo": "PACK EXPO", "packexpo": "PACK EXPO", "芝加哥包装展": "PACK EXPO", "美国包装展": "PACK EXPO",
+    "propak asia": "ProPak Asia", "propakasia": "ProPak Asia", "曼谷包装展": "ProPak Asia", "泰国包装展": "ProPak Asia", "泰国加工包装展": "ProPak Asia",
+    "fha": "FHA Food & Beverage", "fha food & beverage": "FHA Food & Beverage", "fha foodandbeverage": "FHA Food & Beverage",
+    "新加坡食品展": "FHA Food & Beverage", "新加坡食品饮料展": "FHA Food & Beverage", "新加坡fha": "FHA Food & Beverage",
+    "ipack-ima": "IPACK-IMA", "ipack ima": "IPACK-IMA", "ipackima": "IPACK-IMA", "米兰包装展": "IPACK-IMA", "意大利包装展": "IPACK-IMA",
+    "sial": "SIAL 巴黎食品展", "sial paris": "SIAL 巴黎食品展", "巴黎食品展": "SIAL 巴黎食品展",
+    "foodex": "日本 FOODEX", "foodex japan": "日本 FOODEX", "日本食品展": "日本 FOODEX",
+    "thaifex": "泰国 THAIFEX", "曼谷食品展": "泰国 THAIFEX", "越南食品展": "越南国际食品展", "anuga": "德国 ANUGA 食品展",
+}
+
+def _norm_ex_name(s):
+    return re.sub(r"[\s\-–—_.()（）【】\[\]]", "", (s or "").lower())
+
+def resolve_exhibition_profile(name):
+    """根据展会名称在内置检索资料中匹配（支持别名与包含匹配）。"""
+    if not name:
+        return {}
+    n = _norm_ex_name(name)
+    # 1) 精确（归一化）匹配
+    for k, v in EXHIBITION_PROFILES.items():
+        if _norm_ex_name(k) == n:
+            return v
+    # 2) 别名匹配
+    if n in EXHIBITION_ALIASES:
+        return EXHIBITION_PROFILES.get(EXHIBITION_ALIASES[n], {})
+    # 3) 双向包含匹配
+    for k, v in EXHIBITION_PROFILES.items():
+        nk = _norm_ex_name(k)
+        if nk and (nk in n or n in nk):
+            return v
+    return {}
+
+def get_exhibition_profile(name, uid=None):
+    """优先读取用户在「展会资料库」维护的真实展会资料（城市/档期/简介），
+    没有再用内置检索资料。这样用户自己补充的展会描述也能驱动差异化文案。"""
+    if uid:
+        try:
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT name,city,date_text,note FROM exhibitions WHERE user_id=?", (uid,)
+            ).fetchall()
+            conn.close()
+            n = _norm_ex_name(name)
+            for r in rows:
+                rn = _norm_ex_name(r["name"])
+                if rn == n or rn in n or n in rn:
+                    city = r["city"] or ""
+                    date_hint = r["date_text"] or ""
+                    note = (r["note"] or "").strip()
+                    return {
+                        "city": city, "date_hint": date_hint, "scale": "",
+                        "highlights": [note] if note else [],
+                        "openings": [],
+                        "_from_db": True,
+                    }
+        except Exception:
+            pass
+    return resolve_exhibition_profile(name)
 
 # 差异化开场白池(随机选取避免雷同)
 OPENING_VARIANTS = [
@@ -514,7 +659,23 @@ CLOSING_VARIANTS = [
     "无论最终是否参展，都感谢您的时间。祝生意兴隆！",
 ]
 
-def build_email(exhibition, customer_type, scene, tone, custom_input, signature):
+def _build_ex_info(ex, profile):
+    """根据展会资料（可能只有城市/档期/亮点中的部分字段）构建信息段落。"""
+    if not profile:
+        return f"【{ex}】"
+    lines = [f"【{ex}】"]
+    if profile.get("city"):
+        lines.append(f"📍 举办地：{profile['city']}")
+    if profile.get("date_hint"):
+        lines.append(f"📅 展期：{profile['date_hint']}")
+    if profile.get("scale"):
+        lines.append(f"📊 规模：{profile['scale']}")
+    hl = profile.get("highlights") or []
+    if hl:
+        lines.append("✨ 核心亮点：" + "、".join(hl[:3]))
+    return "\n".join(lines)
+
+def build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid=None):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
@@ -522,30 +683,19 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
     intro = TYPE_INTRO.get(ctype, "贵司在食品领域的产品与渠道优势")
     news = (custom_input or "").strip()
 
-    # 获取展会特色数据(用于生成差异化文案)
-    profile = EXHIBITION_PROFILES.get(ex, {})
+    # 获取展会特色数据：优先用户在「展会资料库」维护的真实资料，其次内置检索资料
+    profile = get_exhibition_profile(ex, uid)
     ex_city = profile.get("city", "")
-    ex_date = profile.get("date_hint", "")
     ex_scale = profile.get("scale", "")
     ex_highlights = profile.get("highlights", [])
-    # 随机选取开场白和结尾
-    opening = random.choice(OPENING_VARIANTS) if profile else OPENING_VARIANTS[0]
+    hl2 = "、".join(ex_highlights[:2]) if ex_highlights else ""
+    # 随机选取开场白和结尾（有展会专属开场白时优先用，内容更贴合）
+    opening = random.choice(profile["openings"]) if profile.get("openings") else random.choice(OPENING_VARIANTS)
     closing = random.choice(CLOSING_VARIANTS)
+    ex_info_para = _build_ex_info(ex, profile)
 
     # 称呼占位（发送时按客户替换）
     salutation = "尊敬的 {联系人姓名}（{客户名称}）："
-
-    # 构建展会信息段落(根据是否有profile决定丰富程度)
-    if profile:
-        ex_info_para = (
-            f"【{ex}】\n"
-            f"📍 举办地：{ex_city}\n"
-            f"📅 展期：{ex_date}\n"
-            f"📊 规模：{ex_scale}\n"
-            f"✨ 亮点：{'、'.join(random.sample(ex_highlights, min(2, len(ex_highlights))))}"
-        )
-    else:
-        ex_info_para = f"【{ex}】"
 
     scene_body = {
         "1": (
@@ -560,7 +710,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
             f"{opening}\n\n"
             f"持续关注贵司在海外市场的进展。近期食品行业有几条值得留意的动态，特别与{intro}相关：\n\n"
             f"{ ('【行业资讯】\n' + news) if news else '【行业资讯】近期多国进口食品需求回暖，买家采购意愿明显增强；RCEP 框架下亚洲区内贸易成本持续下降。' }\n\n"
-            f"在此背景下，{ex}将是贵司触达精准海外买家的优质窗口——{ex_scale}。如需，我可补充本次展会的买家结构与往届成交数据。\n\n"
+            f"在此背景下，{ex}将是贵司触达精准海外买家的优质窗口——{ex_scale or '汇聚全球优质采购商'}。如需，我可补充本次展会的买家结构与往届成交数据。\n\n"
             f"{closing}"
         ),
         "3": (
@@ -586,6 +736,38 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
             f"如贵司计划参展，建议尽早确认以赶上补贴申报周期（通常需提前2-3个月），我可协助准备相关材料。\n\n"
             f"{closing}"
         ),
+        # ---- 新增场景：报价 / 客户跟进 / 感谢 ----
+        "6": (
+            f"{opening}\n\n"
+            f"关于贵司关注的{ex}，我们已为贵司初步测算了参展投入与回报，现将报价方案同步如下：\n\n"
+            f"【展位方案】\n"
+            f"· 标准展位（9㎡）：含基础搭建、楣板、照明、洽谈桌 —— 适合首次试水\n"
+            f"· 光地展位（18㎡起）：可定制特装，最大化品牌曝光\n"
+            f"· 双开口 / 角位：+15%，人流与曝光更优\n\n"
+            f"{ ('【展会亮点】' + hl2 + '\n\n') if hl2 else '' }"
+            f"结合{intro}，建议优先选择贴合贵司品类的展区，预计可触达大量精准海外买家。\n\n"
+            f"以上为初步报价框架，最终方案可据贵司展品种类与预算灵活调整。如需要，我可发送完整版报价单与展位图。\n\n"
+            f"{closing}"
+        ),
+        "7": (
+            f"{opening}\n\n"
+            f"距我们上次沟通已有一段时间，特来跟进贵司关于{ex}的参展意向，也想确认接下来的配合节奏。\n\n"
+            f"想和您对齐三点：\n"
+            f"1）参展预算与档期是否已排定？\n"
+            f"2）希望重点对接哪类海外买家（经销商 / 品牌方 / 商超采购）？\n"
+            f"3）是否需要我们协助准备展品运输与人员签证材料？\n\n"
+            f"{ ('【您之前关注的信息】\n' + news + '\n\n') if news else '' }"
+            f"目前{ex}优质展位余量有限{ex_city and '（' + ex_city + '）' or ''}，若确定参展建议尽快锁定，以免错失黄金位置。我可先为贵司预留 48 小时优先选位。\n\n"
+            f"{closing}"
+        ),
+        "8": (
+            f"{opening}\n\n"
+            f"感谢贵司对{ex}的关注与支持！无论最终是否成行，都十分珍视与贵司的交流。\n\n"
+            f"{ ('【本次展会价值】' + hl2 + '\n\n') if hl2 else '' }"
+            f"如贵司后续有出海拓展、买家对接或展会相关的任何需求，我们随时提供协助——包括展后买家名单、行业报告与下一届档期预告。\n\n"
+            f"期待未来有机会与贵司在展会现场或线上深入合作。祝生意兴隆！\n\n"
+            f"{closing}"
+        ),
     }[scene_key]
 
     tone_tail = {
@@ -607,6 +789,9 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature)
         "3": f"【展位余量提醒】{ex} 优质展区所剩无几",
         "4": f"【申报截止提醒】{ex} 创新大奖即将关闭通道",
         "5": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
+        "6": f"【参展报价方案】{ex} 展位费用与投入回报",
+        "7": f"【跟进】{ex} 参展意向确认，请查收",
+        "8": f"【感谢】感谢关注 {ex}，后续资源持续开放",
     }
     subject = subject_map[scene_key]
     return subject, body
@@ -1114,6 +1299,19 @@ class Handler(BaseHTTPRequestHandler):
                              (uid, d.get("company"), d.get("contact"), d.get("email"), d.get("phone"), d.get("exhibition"), tags or "", now_iso()))
                 conn.commit()
                 return json_resp({"ok": True})
+            if path == "/api/customers/batch-delete":
+                ids = d.get("ids") or []
+                ids = [str(i) for i in ids if i not in (None, "")]
+                deleted = 0
+                if ids:
+                    qmarks = ",".join("?" * len(ids))
+                    cur = conn.execute(
+                        f"DELETE FROM customers WHERE user_id=? AND id IN ({qmarks})",
+                        [uid] + ids,
+                    )
+                    deleted = cur.rowcount
+                    conn.commit()
+                return json_resp({"ok": True, "deleted": deleted})
             if path == "/api/customers/import":
                 text = d.get("csv") or ""
                 return self.import_csv(conn, uid, text)
@@ -1168,7 +1366,7 @@ class Handler(BaseHTTPRequestHandler):
                 return json_resp({"ok": True})
             if path == "/api/ai/generate":
                 subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
-                                            d.get("tone"), d.get("custom_input"), d.get("signature"))
+                                            d.get("tone"), d.get("custom_input"), d.get("signature"), uid)
                 return json_resp({"subject": subject, "body": body})
             if path == "/api/exhibitions":
                 conn.execute("INSERT INTO exhibitions (user_id,name,city,date_text,note) VALUES (?,?,?,?,?)",

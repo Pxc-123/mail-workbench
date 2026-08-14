@@ -364,7 +364,7 @@ async function getCustTypes() {
   }
   return CUST_TYPES_CACHE;
 }
-const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "通知创新大奖申报截止提醒"], ["5", "展会补贴政策通知"]];
+const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "通知创新大奖申报截止提醒"], ["5", "展会补贴政策通知"], ["6", "发送参展报价方案"], ["7", "客户跟进回访"], ["8", "参展感谢与维系"]];
 const TONES = ["正式商务", "简洁干练", "温和友好", "简短"];
 
 function viewGen() {
@@ -749,27 +749,60 @@ function viewLogs() {
 function viewCustomers() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "👥 客户列表"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "支持 Excel 批量导入（另存为 CSV）｜ 字段：客户公司、联系人、邮箱、手机号、意向展会、客户标签"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "支持 Excel 批量导入（另存为 CSV）｜ 字段：客户公司、联系人、邮箱、手机号、意向展会、客户标签｜ 勾选后可批量删除"));
   const bar = el("div", { class: "action-bar" });
   const add = el("button", { class: "btn btn-primary" }, "＋ 新增客户");
   add.onclick = addCustomerModal;
   const imp = el("button", { class: "btn" }, "📥 Excel/CSV 批量导入");
   imp.onclick = importModal;
-  bar.appendChild(add); bar.appendChild(imp);
+  const selAll = el("button", { class: "btn" }, "☑ 全选");
+  const selNone = el("button", { class: "btn" }, "☐ 取消全选");
+  const delBatch = el("button", { class: "btn btn-danger" }, "🗑 批量删除");
+  const selInfo = el("span", { class: "muted", id: "cust-sel-info", style: "font-size:12px" }, "已选 0 项");
+  bar.appendChild(add); bar.appendChild(imp); bar.appendChild(selAll); bar.appendChild(selNone); bar.appendChild(delBatch); bar.appendChild(selInfo);
   wrap.appendChild(bar);
   const listBox = el("div", { id: "cust-list" });
   wrap.appendChild(listBox);
   renderCustomerTable(listBox);
+  selAll.onclick = async () => {
+    const r = await api("GET", "/api/customers"); const list = r.data || [];
+    window._custSel = new Set(list.map(c => String(c.id)));
+    renderCustomerTable(listBox);
+  };
+  selNone.onclick = () => {
+    window._custSel = new Set();
+    renderCustomerTable(listBox);
+  };
+  delBatch.onclick = async () => {
+    const ids = Array.from(window._custSel || new Set());
+    if (!ids.length) { toast("请先勾选要删除的客户"); return; }
+    if (!confirm("确定删除选中的 " + ids.length + " 位客户吗？此操作不可恢复。")) return;
+    const r = await api("POST", "/api/customers/batch-delete", { ids });
+    if (!r.ok) { toast("删除失败：" + (r.data && r.data.error || "")); return; }
+    const n = (r.data && r.data.deleted) || ids.length;
+    window._custSel = new Set();
+    renderCustomerTable(listBox);
+    toast("已删除 " + n + " 位客户");
+  };
   return wrap;
 }
 async function renderCustomerTable(target) {
   const r = await api("GET", "/api/customers"); const list = r.data || [];
+  if (!window._custSel) window._custSel = new Set();
   target.innerHTML = "";
   if (!list.length) { target.appendChild(el("div", { class: "empty" }, "暂无客户，点击「新增」或「批量导入」")); return; }
   const t = el("table", { class: "tbl" });
-  t.appendChild(el("tr", {}, ["客户公司", "联系人", "邮箱", "手机号", "意向展会", "标签", "操作"].map(h => el("th", {}, h))));
+  t.appendChild(el("tr", {}, ["", "客户公司", "联系人", "邮箱", "手机号", "意向展会", "标签", "操作"].map(h => el("th", {}, h))));
   list.forEach(c => {
     const tr = el("tr");
+    const chk = el("input", { type: "checkbox", class: "cust-chk", value: String(c.id) });
+    if (window._custSel.has(String(c.id))) chk.checked = true;
+    chk.onchange = () => {
+      if (chk.checked) window._custSel.add(String(c.id)); else window._custSel.delete(String(c.id));
+      const info = document.getElementById("cust-sel-info");
+      if (info) info.textContent = "已选 " + window._custSel.size + " 项";
+    };
+    const td0 = el("td"); td0.appendChild(chk); tr.appendChild(td0);
     tr.appendChild(el("td", {}, c.company || "-"));
     tr.appendChild(el("td", {}, c.contact || "-"));
     tr.appendChild(el("td", {}, c.email || "-"));
@@ -780,10 +813,12 @@ async function renderCustomerTable(target) {
     const editBtn = el("button", { class: "btn btn-sm" }, "编辑");
     editBtn.onclick = () => editCustomerModal(c, target);
     const del = el("button", { class: "btn btn-sm btn-danger" }, "删除");
-    del.onclick = async () => { await api("DELETE", "/api/customers/" + c.id); renderCustomerTable(target); };
+    del.onclick = async () => { await api("DELETE", "/api/customers/" + c.id); window._custSel.delete(String(c.id)); renderCustomerTable(target); };
     td.appendChild(editBtn); td.appendChild(del); tr.appendChild(td);
     t.appendChild(tr);
   });
+  const info = document.getElementById("cust-sel-info");
+  if (info) info.textContent = "已选 " + window._custSel.size + " 项";
   target.appendChild(t);
 }
 function addCustomerModal() {
