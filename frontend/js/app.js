@@ -352,8 +352,18 @@ async function refreshBell() {
 
 /* ================= AI 邮件模板中心 ================= */
 let EXHIBITIONS = [];
+let CUST_TYPES_CACHE = []; // 动态从 /api/tags 加载
 async function getExhibitions() { if (!EXHIBITIONS.length) { const r = await api("GET", "/api/exhibitions"); EXHIBITIONS = r.data || []; } return EXHIBITIONS; }
-const CUST_TYPES = ["预制菜", "调味品", "零食", "原料", "综合食品企业"];
+async function getCustTypes() {
+  if (!CUST_TYPES_CACHE.length) {
+    const r = await api("GET", "/api/tags");
+    const tags = (r.data || []).map(t => t.name);
+    // 如果标签为空，给个默认兜底
+    if (!tags.length) tags.push("全部客户");
+    CUST_TYPES_CACHE = tags;
+  }
+  return CUST_TYPES_CACHE;
+}
 const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "通知创新大奖申报截止提醒"], ["5", "展会补贴政策通知"]];
 const TONES = ["正式商务", "简洁干练", "温和友好", "简短"];
 
@@ -370,8 +380,13 @@ function viewGen() {
   getExhibitions().then(exs => { exs.forEach(e => exSel.appendChild(el("option", { value: e.name }, e.name))); STATE.gen.exhibition = exSel.value; });
   left.appendChild(exSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
-  const ctSel = el("select", { class: "inp" }, CUST_TYPES.map(t => el("option", { value: t }, t)));
+  const ctSel = el("select", { class: "inp" }, [el("option", { value: "" }, "加载中…")]);
   left.appendChild(ctSel);
+  getCustTypes().then(types => {
+    ctSel.innerHTML = "";
+    types.forEach(t => ctSel.appendChild(el("option", { value: t }, t)));
+    if (types.length) STATE.gen.customer_type = ctSel.value;
+  });
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "3. 选择邮件场景"));
   const scSel = el("select", { class: "inp" }, SCENES.map(s => el("option", { value: s[0] }, s[1])));
   left.appendChild(scSel);
@@ -803,11 +818,12 @@ function editCustomerModal(c, target) {
 }
 function importModal() {
   const html = `
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
       <label class="btn btn-primary" style="cursor:pointer;margin:0;display:inline-flex;align-items:center;gap:4px">
         📁 选择文件上传（CSV / Excel）
         <input type="file" id="imp-file" accept=".csv,.xlsx,.xls" style="display:none">
       </label>
+      <button class="btn btn-sm" id="dl-tpl" style="background:#10b981;color:#fff;border-color:#059669">📥 下载导入模板</button>
       <span id="imp-file-name" class="muted" style="font-size:12px">未选择文件</span>
     </div>
     <div class="muted" style="font-size:12px;margin-bottom:8px">
@@ -819,6 +835,21 @@ function importModal() {
     <textarea id="imp-csv" class="inp" style="min-height:140px" placeholder="销售跟进情况表模板会自动识别列名&#10;或标准格式：客户公司,联系人,邮箱,手机号,意向展会,客户标签"></textarea>
     <button class="btn btn-primary btn-block" id="imp-go" style="margin-top:10px">📥 导入客户</button>`;
   openModal("批量导入客户（支持文件上传）", html);
+
+  // 下载导入模板（CSV 格式，Excel 可直接打开）
+  $("#dl-tpl").onclick = () => {
+    const BOM = "\uFEFF";
+    const csv = BOM + "客户公司,联系人,邮箱,手机号,意向展会,客户标签\n" +
+      "XX食品有限公司,张经理,zhang@xxfood.com,13800138000,SIAL Paris 2026,预制菜客户\n" +
+      "YY食品集团,李总,li@yygroup.com,13900139000,Anuga 2026,调味品客户,高意向\n" +
+      "ZZ原料工厂,王工,wang@zzraw.com,13700137000,Foodex Japan 2026,原料客户,待跟进";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "客户导入模板.csv";
+    a.click(); URL.revokeObjectURL(url);
+    toast("模板已下载，用 Excel 打开填写后导入即可");
+  };
 
   // 文件上传处理 —— Excel 转 base64 后交由后端 openpyxl 可靠解析
   const fileInput = $("#imp-file");
@@ -968,30 +999,89 @@ function decodeUTF8(arr) {
 function viewTags() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "🏷 客户标签管理"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "预制标签可直接用于批量发送时的过滤筛选"));
-  api("GET", "/api/tags").then(async r => {
-    let tags = r.data || [];
+  wrap.appendChild(el("div", { class: "section-sub" }, "点击标签可筛选该标签下的客户，方便批量操作"));
+  const resultArea = el("div"); // 筛选结果区域
+  wrap.appendChild(resultArea);
+
+  Promise.all([api("GET", "/api/tags"), api("GET", "/api/customers")]).then(async ([tr, cr]) => {
+    let tags = tr.data || [];
+    const customers = cr.data || [];
+
+    // 统计每个标签的客户数
+    const tagCount = {};
+    customers.forEach(c => {
+      (c.tags || "").split(",").filter(Boolean).forEach(tg => {
+        tagCount[tg] = (tagCount[tg] || 0) + 1;
+      });
+    });
+
     if (!tags.length) {
       const presets = ["预制菜客户", "调味品客户", "零食客户", "原料客户", "高意向", "待跟进"];
       for (const p of presets) await api("POST", "/api/tags", { name: p });
       tags = (await api("GET", "/api/tags")).data || [];
     }
+
     const box = el("div", { class: "card" });
+
+    // 新增标签表单
     const addForm = el("div", { class: "flex" });
     const inp = el("input", { class: "inp", placeholder: "新增标签名" });
     const add = el("button", { class: "btn btn-primary" }, "＋ 新增");
     add.onclick = async () => { if (!inp.value.trim()) return; const rr = await api("POST", "/api/tags", { name: inp.value.trim() }); if (!rr.ok) toast(rr.data.error || ""); else { inp.value = ""; render(); } };
     addForm.appendChild(inp); addForm.appendChild(add); box.appendChild(addForm);
-    const tagsBox = el("div", { style: "margin-top:12px" });
+
+    // 标签列表（可点击筛选）
+    const tagsBox = el("div", { style: "margin-top:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center" });
+    // 「查看全部」按钮
+    const showAllBtn = el("button", { class: "btn btn-sm", style: "background:#3b82f6;color:#fff" }, `📋 查看全部客户（${customers.length}）`);
+    showAllBtn.onclick = () => showCustomerResult(customers, "全部客户", resultArea);
+    tagsBox.appendChild(showAllBtn);
+    tagsBox.appendChild(el("span", { style: "color:#9ca3af;margin:0 4px" }, "|"));
+
     tags.forEach(t => {
-      const pill = el("span", { class: "pill" }, t.name + " ");
-      const x = el("span", { style: "cursor:pointer;color:#dc2626" }, "×");
-      x.onclick = async () => { await api("DELETE", "/api/tags/" + t.id); render(); };
+      const count = tagCount[t.name] || 0;
+      const pill = el("span", {
+        class: "pill",
+        style: "cursor:pointer;user-select:none;" + (count > 0 ? "background:#dbeafe;color:#1d4ed8;border-color:#93c5fd" : ""),
+        title: count > 0 ? `点击筛选 ${count} 个客户` : "暂无客户使用此标签"
+      }, t.name + ` (${count}) `);
+      pill.onclick = () => {
+        if (count === 0) { toast(`暂无标记为「${t.name}」的客户`); return; }
+        const filtered = customers.filter(c => (c.tags || "").split(",").some(tg => tg.trim() === t.name));
+        showCustomerResult(filtered, t.name, resultArea);
+      };
+      const x = el("span", { style: "cursor:pointer;color:#dc2626;margin-left:2px" }, "×");
+      x.onclick = async (ev) => { ev.stopPropagation(); await api("DELETE", "/api/tags/" + t.id); render(); };
       pill.appendChild(x); tagsBox.appendChild(pill);
     });
     box.appendChild(tagsBox); wrap.appendChild(box);
+
+    // 默认显示全部客户
+    showCustomerResult(customers, "全部客户", resultArea);
   });
   return wrap;
+}
+
+/** 在标签页的结果区域显示筛选后的客户表格 */
+function showCustomerResult(list, tagName, container) {
+  container.innerHTML = "";
+  if (!list.length) { container.appendChild(el("div", { class: "empty" }, `没有标记为「${tagName}」的客户`)); return; }
+  const t = el("table", { class: "tbl" });
+  t.appendChild(el("tr", {}, ["客户公司", "联系人", "邮箱", "手机号", "意向展会", "标签"].map(h => el("th", {}, h))));
+  list.forEach(c => {
+    const tr = el("tr");
+    tr.appendChild(el("td", {}, c.company || "-"));
+    tr.appendChild(el("td", {}, c.contact || "-"));
+    tr.appendChild(el("td", {}, c.email || "-"));
+    tr.appendChild(el("td", {}, c.phone || "-"));
+    tr.appendChild(el("td", {}, c.exhibition || "-"));
+    tr.appendChild(el("td", {}, (c.tags || "").split(",").filter(Boolean).map(tg => `<span class="pill">${esc(tg)}</span>`).join("") || "-"));
+    t.appendChild(tr);
+  });
+  const header = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px" });
+  header.appendChild(el("span", { style: "font-weight:bold;font-size:14px" }, `📋 ${tagName} — 共 ${list.length} 位客户`));
+  container.appendChild(header);
+  container.appendChild(t);
 }
 
 /* ================= 展会资料库 ================= */

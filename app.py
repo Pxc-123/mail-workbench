@@ -720,6 +720,10 @@ class Handler(BaseHTTPRequestHandler):
         code, headers, body = self.route_patch(path)
         self._send(code, headers, body)
 
+    def do_PUT(self):
+        """PUT 请求复用 POST 路由（编辑客户等操作）"""
+        self.do_POST()
+
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
         code, headers, body = self.route_delete(path)
