@@ -187,10 +187,13 @@ function render() {
 function viewHome() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "首页工作台"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "今日待办 · 客户跟踪 · 悬浮日历"));
   const grid = el("div", { class: "grid2" });
   grid.appendChild(card("📋 今日待办", todoPanel()));
-  grid.appendChild(card("👥 客户跟踪情况", customerTrackingPanel()));
+  grid.appendChild(card("📅 日历 / 绑定待办", calendarPanel(false)));
   wrap.appendChild(grid);
+  // 客户跟踪作为第三张卡片（与原版布局一致：在网格下方）
+  wrap.appendChild(el("div", { style: "margin-top:16px" }, customerTrackingPanel()));
   return wrap;
 }
 
@@ -203,64 +206,64 @@ const CUSTOMER_STATUS = {
 };
 const STATUS_OPTIONS = Object.keys(CUSTOMER_STATUS);
 
-/* 客户跟踪仪表盘 */
-async function customerTrackingPanel() {
-  const box = el("div");
-  box.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8">加载中…</div>';
-  try {
-    const r = await api("GET", "/api/customers/stats");
-    const stats = r.data || { total: 0, by_status: [] };
-    const total = stats.total || 0;
-    box.innerHTML = "";
-    if (!total) {
-      box.appendChild(el("div", { class: "empty" }, "暂无客户，去「客户管理」添加吧"));
-      return box;
-    }
-    // 状态分布概览（带颜色的卡片）
-    const statGrid = el("div", { class: "stat-grid" });
-    let statusMap = {};
-    (stats.by_status || []).forEach(s => { statusMap[s.s || s.status || "潜在客户"] = s.c || s.count || 0; });
-    // 补齐所有状态（包括数量为0的）
-    STATUS_OPTIONS.forEach(s => { if (!(s in statusMap)) statusMap[s] = 0; });
-    STATUS_OPTIONS.forEach(s => {
-      const cfg = CUSTOMER_STATUS[s];
-      const count = statusMap[s] || 0;
-      const pct = total > 0 ? Math.round(count / total * 100) : 0;
-      const cardEl = el("div", { class: "stat-card", style: `border-left:4px solid ${cfg.color};background:${cfg.bg}` });
-      cardEl.appendChild(el("div", { class: "stat-count", style: `color:${cfg.color}` }, String(count)));
-      cardEl.appendChild(el("div", { class: "stat-label" }, s));
-      cardEl.appendChild(el("div", { class: "stat-pct" }, `占比 ${pct}%`));
-      // 点击跳转到客户列表
-      cardEl.style.cursor = "pointer";
-      cardEl.onclick = () => { STATE.view = "cust"; STATE.sub = "list"; render(); };
-      statGrid.appendChild(cardEl);
-    });
-    box.appendChild(statGrid);
-    // 快捷操作提示
-    box.appendChild(el("div", { class: "section-sub", style: "margin-top:12px" }, "💡 点击状态卡片可跳转到客户列表，在列表中可编辑每位客户的状态"));
-    // 最近更新的3个客户预览
+/* 客户跟踪面板：同步外壳 + 异步填充，避免把 Promise 塞进 appendChild 导致整页崩溃 */
+function customerTrackingPanel() {
+  const cardEl = el("div", { class: "card" });
+  cardEl.appendChild(el("h3", {}, "👥 客户跟踪情况"));
+  const body = el("div");
+  body.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8">加载中…</div>';
+  cardEl.appendChild(body);
+  // 异步填充
+  (async () => {
     try {
-      const cr = await api("GET", "/api/customers");
-      const recent = (cr.data || []).slice(0, 5);
-      if (recent.length) {
-        box.appendChild(el("div", { class: "section-sub", style: "margin-top:14px" }, "最近添加的客户"));
-        const list = el("div", { class: "recent-cust-list" });
-        recent.forEach(c => {
-          const st = c.status || "潜在客户";
-          const cfg = CUSTOMER_STATUS[st] || CUSTOMER_STATUS["潜在客户"];
-          const row = el("div", { class: "recent-cust-item" });
-          row.appendChild(el("span", { class: "pill", style: `background:${cfg.color};color:#fff;font-size:11px` }, cfg.label));
-          row.appendChild(el("span", {}, c.company || "-"));
-          row.appendChild(el("span", { class: "muted", style: "font-size:11px;margin-left:auto" }, c.contact || c.email || ""));
-          list.appendChild(row);
-        });
-        box.appendChild(list);
+      const r = await api("GET", "/api/customers/stats");
+      const stats = r.data || { total: 0, by_status: [] };
+      const total = stats.total || 0;
+      body.innerHTML = "";
+      if (!total) {
+        body.appendChild(el("div", { class: "empty" }, "暂无客户，去「客户管理」添加吧"));
+        return;
       }
-    } catch(e) {}
-  } catch(e) {
-    box.innerHTML = `<div style="color:#ef4444;padding:10px">加载失败：${e.message}</div>`;
-  }
-  return box;
+      const statGrid = el("div", { class: "stat-grid" });
+      const statusMap = {};
+      (stats.by_status || []).forEach(s => { statusMap[s.s || s.status || "潜在客户"] = s.c || s.count || 0; });
+      STATUS_OPTIONS.forEach(s => { if (!(s in statusMap)) statusMap[s] = 0; });
+      STATUS_OPTIONS.forEach(s => {
+        const cfg = CUSTOMER_STATUS[s];
+        const count = statusMap[s] || 0;
+        const pct = total > 0 ? Math.round(count / total * 100) : 0;
+        const sc = el("div", { class: "stat-card", style: `border-left:4px solid ${cfg.color};background:${cfg.bg};cursor:pointer` });
+        sc.appendChild(el("div", { class: "stat-count", style: `color:${cfg.color}` }, String(count)));
+        sc.appendChild(el("div", { class: "stat-label" }, s));
+        sc.appendChild(el("div", { class: "stat-pct" }, `占比 ${pct}%`));
+        sc.onclick = () => { STATE.view = "cust"; STATE.sub = "list"; render(); };
+        statGrid.appendChild(sc);
+      });
+      body.appendChild(statGrid);
+      body.appendChild(el("div", { class: "section-sub", style: "margin-top:12px" }, "💡 点击状态卡片可跳转到客户列表，在列表中可编辑每位客户的状态"));
+      try {
+        const cr = await api("GET", "/api/customers");
+        const recent = (cr.data || []).slice(0, 5);
+        if (recent.length) {
+          body.appendChild(el("div", { class: "section-sub", style: "margin-top:14px" }, "最近添加的客户"));
+          const list = el("div", { class: "recent-cust-list" });
+          recent.forEach(c => {
+            const st = c.status || "潜在客户";
+            const cfg = CUSTOMER_STATUS[st] || CUSTOMER_STATUS["潜在客户"];
+            const row = el("div", { class: "recent-cust-item" });
+            row.appendChild(el("span", { class: "pill", style: `background:${cfg.color};color:#fff;font-size:11px` }, cfg.label));
+            row.appendChild(el("span", {}, c.company || "-"));
+            row.appendChild(el("span", { class: "muted", style: "font-size:11px;margin-left:auto" }, c.contact || c.email || ""));
+            list.appendChild(row);
+          });
+          body.appendChild(list);
+        }
+      } catch(e) {}
+    } catch(e) {
+      body.innerHTML = `<div style="color:#ef4444;padding:10px">加载失败：${e.message}</div>`;
+    }
+  })();
+  return cardEl;
 }
 function todoPanel() {
   const box = el("div");
@@ -287,14 +290,18 @@ async function loadTodos(target) {
   const r = await api("GET", "/api/todos");
   const list = r.data || [];
   const today = todayStr();
-  // 只显示当天的待办（bind_date == today 或 due_time 是今天 或 无日期的也显示）
+  // 只显示当天需要处理的待办：
+  //   ① bind_date == 今天  ② due_time 是今天  ③ 无日期的  ④ 已逾期但未完成
+  // 已完成的不显示。
   const todayList = list.filter(t => {
-    if (t.done) return false; // 已完成的不显示
+    if (t.done) return false;
     if (t.bind_date === today) return true;
     if (t.due_time && t.due_time.startsWith(today)) return true;
-    // 无绑定日期且未过期的也显示
-    if (!t.bind_date && !t.due_time) return true;
-    if (!t.bind_date && t.due_time) { const d = new Date(t.due_time.replace(" ", "T")); return d >= new Date(today); }
+    if (!t.bind_date && !t.due_time) return true; // 无日期的也显示在工作台
+    if (t.due_time) { // 有截止时间且已逾期 → 属于"当天需要补做"
+      const d = new Date(t.due_time.replace(" ", "T"));
+      return d < new Date();
+    }
     return false;
   });
   target.innerHTML = "";
@@ -483,10 +490,19 @@ function viewGen() {
       const r = await api("GET", "/api/news/search?q=" + encodeURIComponent("食品包装机械 海外市场 出展 2026"));
       if (r.data && r.data.items && r.data.items.length) {
         const items = r.data.items;
-        const sourceNote = r.data.note ? `【${r.data.note}】` : `（来源：${r.data.source || "网络"}）`;
-        let text = "【最新行业资讯】" + sourceNote + "\n\n" + items.map((it, i) => `${i + 1}. ${it}`).join("\n");
-        custom.value = text;
-        toast(`已加载 ${items.length} 条资讯`);
+        const isCache = (r.data.source || "").indexOf("缓存") >= 0;
+        const srcLabel = isCache ? "近期热点(缓存，非实时)" : (r.data.source || "网络");
+        const when = r.data.fetched_at ? ` · 抓取于 ${r.data.fetched_at.slice(0,16)}` : "";
+        const head = `【最新行业资讯】来源：${srcLabel}${when}`;
+        const lines = items.map((it, i) => {
+          if (typeof it === "object" && it) {
+            const d = it.date ? `（${it.date.slice(0,10)}）` : "";
+            return `${i + 1}. ${it.title}${d}`;
+          }
+          return `${i + 1}. ${it}`;
+        });
+        custom.value = head + "\n\n" + lines.join("\n") + (isCache ? "\n\n（提示：实时抓取暂不可用，以上为缓存热点，建议手动补充最新动态）" : "");
+        toast(`已加载 ${items.length} 条真实资讯`);
       } else {
         toast("未搜索到相关资讯，请手动输入");
       }

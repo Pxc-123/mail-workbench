@@ -675,64 +675,90 @@ def get_exhibition_profile(name, uid=None):
     return builtin
 
 def _fetch_industry_news(keyword="食品包装机械 海外市场"):
-    """抓取真实行业新闻（食品包装/出海/展会相关），返回格式化的新闻摘要列表。
-    使用多个公开源提高成功率，失败时返回空列表（由前端提示用户）。"""
-    import ssl as _ssl
-    results = []
+    """抓取真实行业新闻（带真实发布时间），用于邮件场景2「跟进意向客户推送最新行业新闻」。
+    抓取策略（按成功率排序）：
+      1) rss2json 代理 Google News RSS —— 结构化 JSON、带 pubDate，最可靠；
+      2) rss2json 代理 Bing News RSS —— 备用结构化源；
+      3) 直连百度新闻 HTML —— 容器能出网时的兜底；
+      4) 仅当以上全部失败，才返回明确标注「缓存」的近期热点（非实时）。
+    返回结果按发布时间倒序、标题去重，优先最新。"""
+    import ssl as _ssl, re as _re, json as _json
     ctx = _ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = _ssl.CERT_NONE
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
-    # 源1：百度新闻搜索（中文行业资讯最全）
+
+    def _via_rss2json(rss_url, label):
+        """经 rss2json 公共接口把 RSS 转成 JSON（后端对后端，无 CORS 问题）。"""
+        api = "https://api.rss2json.com/v1/api.json?rss_url=" + urllib.parse.quote(rss_url)
+        try:
+            req = urllib.request.Request(api, headers=headers)
+            with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
+                data = _json.loads(resp.read().decode("utf-8", "ignore"))
+            if data.get("status") != "ok":
+                return None
+            items = data.get("items") or []
+            parsed = []
+            for it in items:
+                title = (it.get("title") or "").strip()
+                pub = (it.get("pubDate") or "").strip()
+                if len(title) < 8:
+                    continue
+                parsed.append({"title": title, "date": pub})
+            if len(parsed) >= 3:
+                parsed.sort(key=lambda x: x["date"], reverse=True)
+                seen, uniq = set(), []
+                for p in parsed:
+                    k = p["title"][:18]
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    uniq.append(p)
+                return {"source": "实时新闻(" + label + ")", "items": uniq[:6],
+                        "fetched_at": now_iso(), "dated": True}
+        except Exception:
+            return None
+        return None
+
+    # 主源：Google News RSS（中文聚合，覆盖出海/包装/展会）
+    gnews = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(keyword)
+             + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
+    r = _via_rss2json(gnews, "Google News")
+    if r:
+        return r
+    # 备用：Bing News RSS
+    bnews = "https://www.bing.com/news/search?q=" + urllib.parse.quote(keyword) + "&format=rss"
+    r = _via_rss2json(bnews, "Bing News")
+    if r:
+        return r
+
+    # 兜底1：直连百度新闻 HTML（容器能出网时可用）
     try:
-        url = f"https://news.baidu.com/ns?word={urllib.parse.quote(keyword)}&tn=news&from=news&cl=2&rn=10"
+        url = "https://news.baidu.com/ns?word=" + urllib.parse.quote(keyword) + "&tn=news&from=news&cl=2&rn=10"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-            # 提取新闻标题和摘要
-            import re as _re
-            titles = _re.findall(r'<a[^>]*href="[^"]*"[^>]*target="_blank"[^>]*>([^<]+)</a>', html)
-            for t in titles[:8]:
-                t = t.strip()
-                if len(t) > 10 and not _re.match(r'^[\d\s\-\:]+$', t):
-                    results.append(t)
-            if len(results) >= 3:
-                return {"source": "百度新闻", "items": results[:6], "fetched_at": now_iso()}
+            html = resp.read().decode("utf-8", "ignore")
+        titles = _re.findall(r'<a[^>]*target="_blank"[^>]*>([^<]+)</a>', html)
+        results = [t.strip() for t in titles if len(t.strip()) > 10]
+        if len(results) >= 3:
+            return {"source": "百度新闻", "items": results[:6], "fetched_at": now_iso()}
     except Exception:
         pass
-    # 源2：搜狗微信搜索（公众号文章，质量高）
-    if not results:
-        try:
-            url = f"https://weixin.sogou.com/weixin?type=2&query={urllib.parse.quote(keyword)}"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-                html = resp.read().decode("utf-8", errors="ignore")
-                import re as _re
-                titles = _re.findall(r'<a[^>]*><em[^>]*>([^<]+)</em></a>', html)
-                for t in titles[:8]:
-                    t = _re.sub(r'<[^>]+>', '', t).strip()
-                    if len(t) > 10:
-                        results.append(t)
-                if results:
-                    return {"source": "搜狗微信", "items": results[:6], "fetched_at": now_iso()}
-        except Exception:
-            pass
-    # 兜底：返回近期已知的行业热点（定期手动更新）
-    if not results:
-        fallback_items = [
-            "2026年全球食品包装机械市场规模预计突破580亿美元，亚太地区增速领跑",
-            "RCEP全面生效两周年，中国食品机械对东盟出口同比增长28%",
-            "欧盟新版食品接触材料法规(FCM)将于2026年底实施，出口企业需提前合规",
-            "智能包装与可持续包装成为2026年国际展会核心主题，买家关注度提升40%",
-            "东南亚食品加工市场快速扩张，越南、印尼、泰国成中国设备主要出口目的地",
-            "中东及北非地区食品进口需求持续增长，迪拜Gulfood展位供不应求",
-        ]
-        return {"source": "行业热点(缓存)", "items": fallback_items, "fetched_at": now_iso(), "note": "实时抓取暂不可用，显示近期已知热点"}
-    return {"source": "未知", "items": results[:6], "fetched_at": now_iso()}
+
+    # 兜底2：明确标注的缓存热点（非实时，仅当实时抓取全部失败）
+    fallback_items = [
+        "2026年全球食品包装机械市场规模预计突破580亿美元，亚太地区增速领跑",
+        "RCEP全面生效两周年，中国食品机械对东盟出口同比增长28%",
+        "欧盟新版食品接触材料法规(FCM)将于2026年底实施，出口企业需提前合规",
+        "智能包装与可持续包装成为2026年国际展会核心主题，买家关注度提升40%",
+        "东南亚食品加工市场快速扩张，越南、印尼、泰国成中国设备主要出口目的地",
+        "中东及北非地区食品进口需求持续增长，迪拜Gulfood展位供不应求",
+    ]
+    return {"source": "行业热点(缓存)", "items": fallback_items, "fetched_at": now_iso(),
+            "note": "实时抓取暂不可用，显示近期已知热点"}
 
 # 差异化开场白池(随机选取避免雷同)
 OPENING_VARIANTS = [
@@ -775,6 +801,23 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
     tone_key = tone if tone in TONE_LABELS else "正式商务"
     intro = TYPE_INTRO.get(ctype, "贵司在食品领域的产品与渠道优势")
     news = (custom_input or "").strip()
+    # 场景2「跟进意向客户推送最新行业新闻」：若用户未手动提供资讯，
+    # 后端自动抓取真实新闻作为安全网（best-effort，失败则保留通用兜底）。
+    if scene_key == "2" and not news:
+        try:
+            fr = _fetch_industry_news(ex + " 食品包装机械 出海")
+            its = fr.get("items") or []
+            if its:
+                parts = []
+                for it in its[:4]:
+                    if isinstance(it, dict):
+                        d = it.get("date", "")
+                        parts.append(f"- {it.get('title','')}{('（'+d[:10]+'）') if d else ''}")
+                    else:
+                        parts.append(f"- {it}")
+                news = "\n".join(parts)
+        except Exception:
+            pass
 
     # 获取展会特色数据：优先用户在「展会资料库」维护的真实资料，其次内置检索资料
     profile = get_exhibition_profile(ex, uid)
