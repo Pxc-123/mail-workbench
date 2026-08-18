@@ -187,13 +187,11 @@ function render() {
 function viewHome() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "首页工作台"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "今日待办 · 客户跟踪 · 悬浮日历"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "待办事项提醒 · 悬浮日历可把待办绑定到具体日期"));
   const grid = el("div", { class: "grid2" });
   grid.appendChild(card("📋 今日待办", todoPanel()));
   grid.appendChild(card("📅 日历 / 绑定待办", calendarPanel(false)));
   wrap.appendChild(grid);
-  // 客户跟踪作为第三张卡片（与原版布局一致：在网格下方）
-  wrap.appendChild(el("div", { style: "margin-top:16px" }, customerTrackingPanel()));
   return wrap;
 }
 
