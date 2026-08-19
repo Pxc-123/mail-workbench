@@ -358,6 +358,15 @@ def init_db():
                 c.execute("UPDATE users SET role='admin' WHERE id=?", (first_uid,))
     except Exception:
         pass
+    # 场景重编号迁移（已删除"创新大奖申报"场景：原编号 4 移除，原 5-8 → 4-7）
+    try:
+        c.execute("""UPDATE templates SET scene = CASE scene
+                        WHEN '5' THEN '4' WHEN '6' THEN '5' WHEN '7' THEN '6' WHEN '8' THEN '7'
+                        WHEN '4' THEN '1' WHEN '通知创新大奖申报截止提醒' THEN '1'
+                        ELSE scene END
+                    WHERE scene IN ('4','5','6','7','8','通知创新大奖申报截止提醒')""")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -435,11 +444,10 @@ SCENE_LABELS = {
     "1": "初次开发陌生客户",
     "2": "跟进意向客户推送最新行业新闻",
     "3": "通知展位余量紧张催单",
-    "4": "通知创新大奖申报截止提醒",
-    "5": "展会补贴政策通知",
-    "6": "发送参展报价方案",
-    "7": "客户跟进回访",
-    "8": "参展感谢与维系",
+    "4": "展会补贴政策通知",
+    "5": "发送参展报价方案",
+    "6": "客户跟进回访",
+    "7": "参展感谢与维系",
 }
 TONE_LABELS = {"正式商务": "正式商务", "简洁干练": "简洁干练", "温和友好": "温和友好", "简短": "简短"}
 
@@ -858,22 +866,14 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
         ),
         "4": (
             f"{opening}\n\n"
-            f"{ex}「创新大奖」申报通道现已开启，申报截止日期临近。该奖项面向具有产品创新力的食品企业，"
-            f"与{intro}高度契合，是提升品牌国际曝光、获得海外买家信任的绝佳机会。\n\n"
-            f"{ ('补充信息：\n' + news + '\n') if news else '' }"
-            f"如贵司有意向参与，我可协助整理申报材料并对接组委会。请勿错过截止时间。\n\n"
-            f"{closing}"
-        ),
-        "5": (
-            f"{opening}\n\n"
             f"就贵司关注出海拓展的成本问题，特向您同步{ex}相关的参展补贴政策：多地商务主管部门对中小企业海外参展给予"
             f"展位费补贴（通常 50%~70% 不等），可显著降低出海门槛。\n\n"
             f"{ ('政策要点：\n' + news + '\n') if news else '' }"
             f"如贵司计划参展，建议尽早确认以赶上补贴申报周期（通常需提前2-3个月），我可协助准备相关材料。\n\n"
             f"{closing}"
         ),
-        # ---- 新增场景：报价 / 客户跟进 / 感谢 ----
-        "6": (
+        # ---- 报价 / 客户跟进 / 感谢 ----
+        "5": (
             f"{opening}\n\n"
             f"关于贵司关注的{ex}，我们已为贵司初步测算了参展投入与回报，现将报价方案同步如下：\n\n"
             f"【展位方案】\n"
@@ -885,7 +885,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
             f"以上为初步报价框架，最终方案可据贵司展品种类与预算灵活调整。如需要，我可发送完整版报价单与展位图。\n\n"
             f"{closing}"
         ),
-        "7": (
+        "6": (
             f"{opening}\n\n"
             f"距我们上次沟通已有一段时间，特来跟进贵司关于{ex}的参展意向，也想确认接下来的配合节奏。\n\n"
             f"想和您对齐三点：\n"
@@ -896,7 +896,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
             f"目前{ex}优质展位余量有限{ex_city and '（' + ex_city + '）' or ''}，若确定参展建议尽快锁定，以免错失黄金位置。我可先为贵司预留 48 小时优先选位。\n\n"
             f"{closing}"
         ),
-        "8": (
+        "7": (
             f"{opening}\n\n"
             f"感谢贵司对{ex}的关注与支持！无论最终是否成行，都十分珍视与贵司的交流。\n\n"
             f"{ ('【本次展会价值】' + hl2 + '\n\n') if hl2 else '' }"
@@ -923,11 +923,10 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
         "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
         "2": f"[{ctype}行业资讯] 附 {ex} 出海机会",
         "3": f"【展位余量提醒】{ex} 优质展区所剩无几",
-        "4": f"【申报截止提醒】{ex} 创新大奖即将关闭通道",
-        "5": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
-        "6": f"【参展报价方案】{ex} 展位费用与投入回报",
-        "7": f"【跟进】{ex} 参展意向确认，请查收",
-        "8": f"【感谢】感谢关注 {ex}，后续资源持续开放",
+        "4": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
+        "5": f"【参展报价方案】{ex} 展位费用与投入回报",
+        "6": f"【跟进】{ex} 参展意向确认，请查收",
+        "7": f"【感谢】感谢关注 {ex}，后续资源持续开放",
     }
     subject = subject_map[scene_key]
     return subject, body
@@ -1360,7 +1359,6 @@ class Handler(BaseHTTPRequestHandler):
         demo_todos = [
             ("跟进XX预制菜厂参展意向", (base + datetime.timedelta(days=1)).isoformat(), "高"),
             ("发送SIAL展位图给YY调味品", (base + datetime.timedelta(days=2)).isoformat(), "中"),
-            ("准备创新大奖申报材料", (base + datetime.timedelta(days=4)).isoformat(), "高"),
             ("整理越南食品展客户名单", base.isoformat(), "低"),
         ]
         for t in demo_todos:
@@ -1522,6 +1520,8 @@ class Handler(BaseHTTPRequestHandler):
                 subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid)
                 return json_resp({"subject": subject, "body": body})
+            if path == "/api/ai/translate":
+                return self.translate_email(d)
             if path == "/api/exhibitions":
                 conn.execute("INSERT INTO exhibitions (user_id,name,city,date_text,note) VALUES (?,?,?,?,?)",
                              (uid, d.get("name"), d.get("city"), d.get("date_text"), d.get("note")))
@@ -1542,10 +1542,11 @@ class Handler(BaseHTTPRequestHandler):
                     fpath = d.get("file_path") or ""
                 if os.path.exists(fpath):
                     cos_upload_attachment(fpath)
-                conn.execute("INSERT INTO materials (user_id,exhibition_id,name,file_path,created_at) VALUES (?,?,?,?,?)",
+                cur = conn.execute("INSERT INTO materials (user_id,exhibition_id,name,file_path,created_at) VALUES (?,?,?,?,?)",
                              (uid, ex_id, name, fpath, now_iso()))
                 conn.commit()
-                return json_resp({"ok": True})
+                new_id = cur.lastrowid
+                return json_resp({"ok": True, "id": new_id})
             if path == "/api/email/preview":
                 return self.preview_emails(conn, uid, u, d)
             if path == "/api/email/send":
@@ -2098,6 +2099,41 @@ class Handler(BaseHTTPRequestHandler):
             except: pass
             return json_resp({"ok": True, "results": results, "demo_mode": bool(settings.get("demo_mode")), "warning": f"发送中断: {str(outer_e)}"})
         return json_resp({"ok": True, "results": results, "demo_mode": bool(settings.get("demo_mode"))})
+
+    def translate_email(self, d):
+        """邮件翻译：中文 → 英文 / 中英双语"""
+        subject = d.get("subject", "")
+        body = d.get("body", "")
+        target = d.get("target", "en")
+        if not subject or not body:
+            return json_resp({"error": "邮件内容为空"}, 400)
+        try:
+            if target == "en":
+                # 调用大模型翻译为英文
+                en_subj = _call_llm(f"将以下邮件主题翻译为地道商务英文，只返回翻译结果，不要解释：\n{subject}")
+                en_body = _call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{body}")
+                return json_resp({"subject": en_subj.strip(), "body": en_body.strip()})
+            elif target == "bilingual":
+                # 中英双语：每段中文后附英文
+                en_body = _call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{body}")
+                # 合并为双语格式
+                zh_lines = body.strip().split("\n")
+                en_lines = en_body.strip().split("\n")
+                merged = []
+                for i, zl in enumerate(zh_lines):
+                    if zl.strip():
+                        merged.append(zl)
+                        el = en_lines[i] if i < len(en_lines) else ""
+                        if el.strip():
+                            merged.append("[EN] " + el)
+                    else:
+                        merged.append(zl)
+                bi_subj = _call_llm(f"将以下邮件主题翻译为地道商务英文，只返回翻译结果：\n{subject}")
+                return json_resp({"subject": subject.strip() + " / " + bi_subj.strip(), "body": "\n".join(merged)})
+            else:
+                return json_resp({"subject": subject, "body": body})
+        except Exception as e:
+            return json_resp({"error": f"翻译失败: {str(e)}"}, 500)
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):

@@ -9,6 +9,8 @@ const STATE = {
   selectedDate: null,
   gen: { exhibition: "", customer_type: "", scene: "", tone: "", subject: "", body: "" },
   attachments: [], // [{id,name}]
+  lang: "zh", // 邮件语言: zh / bilingual / en
+  origMail: { subject: "", body: "" }, // 保存原始中文邮件，用于翻译切换
 };
 
 /* ---------- 基础工具 ---------- */
@@ -448,7 +450,7 @@ async function getCustTypes() {
   }
   return CUST_TYPES_CACHE;
 }
-const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "通知创新大奖申报截止提醒"], ["5", "展会补贴政策通知"], ["6", "发送参展报价方案"], ["7", "客户跟进回访"], ["8", "参展感谢与维系"]];
+const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "展会补贴政策通知"], ["5", "发送参展报价方案"], ["6", "客户跟进回访"], ["7", "参展感谢与维系"]];
 const TONES = ["正式商务", "简洁干练", "温和友好", "简短"];
 
 function viewGen() {
@@ -520,6 +522,9 @@ function viewGen() {
     gen.textContent = "⚡ AI 一键生成邮件"; gen.disabled = false;
     if (!r.ok) { toast("生成失败"); return; }
     STATE.gen = { exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, subject: r.data.subject, body: r.data.body };
+    STATE.origMail = { subject: r.data.subject, body: r.data.body };
+    STATE.lang = "zh";
+    updateLangButtons();
     $("#pv-subject").value = r.data.subject; $("#pv-body").value = r.data.body;
     toast("已生成，可在右侧修改");
   };
@@ -528,6 +533,23 @@ function viewGen() {
 
   // 右：预览编辑
   const right = el("div", { class: "preview-box" });
+  // 语言切换按钮
+  const langBar = el("div", { style: "display:flex;gap:6px;margin-bottom:10px;align-items:center" });
+  const langOpts = [
+    { key: "zh", label: "🇨🇳 中文" },
+    { key: "bilingual", label: "🇨🇳/🇬🇧 中英双语" },
+    { key: "en", label: "🇬🇧 英文" }
+  ];
+  langOpts.forEach(opt => {
+    const btn = el("button", {
+      class: "btn btn-sm",
+      "data-lang": opt.key,
+      style: "font-size:12px;padding:4px 10px"
+    }, opt.label);
+    btn.onclick = () => switchMailLang(opt.key);
+    langBar.appendChild(btn);
+  });
+  right.appendChild(langBar);
   right.appendChild(el("div", { class: "label" }, "邮件主题（可修改）"));
   const subj = el("input", { class: "preview-subject", id: "pv-subject", placeholder: "AI 生成后显示主题" });
   right.appendChild(subj);
@@ -615,9 +637,42 @@ async function saveTemplateModal() {
 }
 async function attachModal() {
   const r = await api("GET", "/api/materials"); const mats = r.data || [];
-  const html = `<div class="cfg-row">${mats.length ? mats.map(m => `<label style="display:block;margin:6px 0"><input type="checkbox" class="att-chk" value="${m.id}" ${STATE.attachments.find(a => a.id === m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("") : '<div class="muted">资料库暂无文件，请先到「展会资料库」上传</div>'}</div>
+  const html = `
+    <div class="cfg-row" style="margin-bottom:12px">
+      <label style="display:block;margin-bottom:6px;font-weight:bold">📁 从本地上传新文件</label>
+      <input type="file" id="att-local-file" class="inp" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.gif" style="padding:6px">
+      <div style="font-size:11px;color:#888;margin-top:4px">支持：PDF / Word / Excel / CSV / 图片</div>
+    </div>
+    <div class="cfg-row" style="border-top:1px solid #eee;padding-top:12px">
+      <label style="display:block;margin-bottom:6px;font-weight:bold">📂 或从资料库选择已有文件</label>
+      ${mats.length ? mats.map(m => `<label style="display:block;margin:6px 0"><input type="checkbox" class="att-chk" value="${m.id}" ${STATE.attachments.find(a => a.id === m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("") : '<div class="muted">资料库暂无文件</div>'}
+    </div>
     <button class="btn btn-primary btn-block" id="att-ok">确定</button>`;
-  openModal("添加附件（绑定展会手册 PDF）", html);
+  openModal("添加附件", html);
+
+  // 本地上传处理
+  $("#att-local-file").onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
+    const rr = await api("POST", "/api/materials", { name: f.name, content_b64: b64 });
+    if (!rr.ok) { toast("上传失败：" + (rr.data.error || "")); return; }
+    // 上传成功后，刷新资料库列表并自动勾选新文件
+    const r2 = await api("GET", "/api/materials");
+    const newMats = r2.data || [];
+    const newFile = newMats.find(m => m.name === f.name);
+    if (newFile) {
+      if (!STATE.attachments.find(a => a.id === newFile.id)) {
+        STATE.attachments.push({ id: newFile.id, name: newFile.name });
+      }
+      $("#att-info").textContent = "当前附件：" + STATE.attachments.map(a => a.name).join("、");
+      toast("已上传并绑定：" + f.name);
+    }
+    // 重新渲染弹窗内容
+    closeModal();
+    attachModal();
+  };
+
   $("#att-ok").onclick = () => {
     STATE.attachments = $all(".att-chk:checked").map(c => { const m = mats.find(x => x.id == c.value); return { id: m.id, name: m.name }; });
     $("#att-info").textContent = "当前附件：" + (STATE.attachments.length ? STATE.attachments.map(a => a.name).join("、") : "无");
@@ -1162,8 +1217,8 @@ function viewTags() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "🏷 客户标签管理"));
   wrap.appendChild(el("div", { class: "section-sub" }, "点击标签可筛选该标签下的客户，方便批量操作"));
-  const resultArea = el("div"); // 筛选结果区域
-  wrap.appendChild(resultArea);
+
+  const resultArea = el("div"); // 筛选结果区域（最后插入，位于标签操作栏下方）
 
   Promise.all([api("GET", "/api/tags"), api("GET", "/api/customers")]).then(async ([tr, cr]) => {
     let tags = tr.data || [];
@@ -1218,7 +1273,8 @@ function viewTags() {
     });
     box.appendChild(tagsBox); wrap.appendChild(box);
 
-    // 默认显示全部客户
+    // 客户列表表格放在标签操作栏下方，默认显示全部客户
+    wrap.appendChild(resultArea);
     showCustomerResult(customers, "全部客户", resultArea);
   });
   return wrap;
@@ -1227,7 +1283,11 @@ function viewTags() {
 /** 在标签页的结果区域显示筛选后的客户表格 */
 function showCustomerResult(list, tagName, container) {
   container.innerHTML = "";
-  if (!list.length) { container.appendChild(el("div", { class: "empty" }, `没有标记为「${tagName}」的客户`)); return; }
+  if (!list.length) {
+    const emptyText = tagName === "全部客户" ? "暂无客户" : `没有标记为「${tagName}」的客户`;
+    container.appendChild(el("div", { class: "empty" }, emptyText));
+    return;
+  }
   const t = el("table", { class: "tbl" });
   t.appendChild(el("tr", {}, ["客户公司", "联系人", "邮箱", "手机号", "意向展会", "标签"].map(h => el("th", {}, h))));
   list.forEach(c => {
@@ -1241,7 +1301,8 @@ function showCustomerResult(list, tagName, container) {
     t.appendChild(tr);
   });
   const header = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px" });
-  header.appendChild(el("span", { style: "font-weight:bold;font-size:14px" }, `📋 ${tagName} — 共 ${list.length} 位客户`));
+  const titleText = tagName === "全部客户" ? `📋 全部客户 — 共 ${list.length} 位` : `📋 ${tagName} — 共 ${list.length} 位客户`;
+  header.appendChild(el("span", { style: "font-weight:bold;font-size:14px" }, titleText));
   container.appendChild(header);
   container.appendChild(t);
 }
@@ -1627,6 +1688,40 @@ function openChangeMyPassword() {
     if (r.ok) { toast("密码已修改，下次登录请使用新密码"); closeModal(); }
     else toast("失败：" + (r.data.error || ""));
   };
+}
+
+/* ---------- 邮件语言切换 ---------- */
+function updateLangButtons() {
+  $all('[data-lang]').forEach(btn => {
+    const active = btn.dataset.lang === STATE.lang;
+    btn.style.background = active ? '#1f6feb' : '#f3f4f6';
+    btn.style.color = active ? '#fff' : '#374151';
+    btn.style.borderColor = active ? '#1f6feb' : '#d1d5db';
+  });
+}
+async function switchMailLang(lang) {
+  if (!STATE.origMail.subject) { toast("请先生成邮件"); return; }
+  STATE.lang = lang;
+  updateLangButtons();
+  if (lang === 'zh') {
+    $("#pv-subject").value = STATE.origMail.subject;
+    $("#pv-body").value = STATE.origMail.body;
+    toast("已切换为中文");
+    return;
+  }
+  // 调用后端翻译
+  const r = await api("POST", "/api/ai/translate", {
+    subject: STATE.origMail.subject,
+    body: STATE.origMail.body,
+    target: lang // 'en' 或 'bilingual'
+  });
+  if (r.ok && r.data) {
+    $("#pv-subject").value = r.data.subject || STATE.origMail.subject;
+    $("#pv-body").value = r.data.body || STATE.origMail.body;
+    toast(lang === 'en' ? "已切换为英文" : "已切换为中英双语");
+  } else {
+    toast("翻译失败：" + (r.data?.error || "请稍后重试"));
+  }
 }
 
 /* ---------- 启动 ---------- */
