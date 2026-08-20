@@ -31,6 +31,27 @@ from http.server import BaseHTTPRequestHandler
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 数据库路径支持环境变量覆盖（云托管/容器场景挂载持久盘时使用）
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "workbench.db"))
+
+# ---------------------------- 翻译辅助（中英双语切换） ----------------------------
+def _call_llm(prompt):
+    """调用免费翻译 API 将中文译为英文；失败时返回原文兜底。"""
+    # 从 prompt 中提取待翻译文本（去掉前面的指令行）
+    text = prompt.split("\n", 1)[-1] if "\n" in prompt else prompt
+    if not text.strip():
+        return ""
+    try:
+        import urllib.request
+        # MyMemory 免费翻译（CloudBase 海外节点通常可访问）
+        url = "https://api.mymemory.translated.net/get?q=" + urllib.parse.quote(text) + "&langpair=zh-CN|en"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("responseStatus") == 200:
+                return data["responseData"]["translatedText"]
+    except Exception:
+        pass
+    # 兜底：返回原文，避免页面无响应
+    return text
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "..", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
