@@ -52,6 +52,26 @@ def _call_llm(prompt):
         pass
     # 兜底：返回原文，避免页面无响应
     return text
+
+
+def _translate_long_text(text):
+    """分段翻译长文本：MyMemory 单次请求限 500 字符，按段落切块翻译后拼接。"""
+    if not text or not text.strip():
+        return text
+    if len(text) <= 450:
+        return _call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{text}")
+    blocks = text.split("\n\n")
+    out = []
+    buf = ""
+    for b in blocks:
+        if buf and len(buf) + len(b) + 2 > 450:
+            out.append(_call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{buf}"))
+            buf = b
+        else:
+            buf = (buf + "\n\n" + b) if buf else b
+    if buf:
+        out.append(_call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{buf}"))
+    return "\n\n".join(out)
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "..", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -2130,27 +2150,19 @@ class Handler(BaseHTTPRequestHandler):
             return json_resp({"error": "邮件内容为空"}, 400)
         try:
             if target == "en":
-                # 调用大模型翻译为英文
+                # 翻译为英文（含英文落款）
                 en_subj = _call_llm(f"将以下邮件主题翻译为地道商务英文，只返回翻译结果，不要解释：\n{subject}")
-                en_body = _call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{body}")
+                en_body = _translate_long_text(body)
                 return json_resp({"subject": en_subj.strip(), "body": en_body.strip()})
             elif target == "bilingual":
-                # 中英双语：每段中文后附英文
-                en_body = _call_llm(f"将以下邮件正文翻译为地道商务英文，保持段落格式，只返回翻译结果，不要解释：\n{body}")
-                # 合并为双语格式
-                zh_lines = body.strip().split("\n")
-                en_lines = en_body.strip().split("\n")
-                merged = []
-                for i, zl in enumerate(zh_lines):
-                    if zl.strip():
-                        merged.append(zl)
-                        el = en_lines[i] if i < len(en_lines) else ""
-                        if el.strip():
-                            merged.append("[EN] " + el)
-                    else:
-                        merged.append(zl)
+                # 中英双语：中文全文在上（含中文落款），英文全文在下（含英文落款）
+                en_body = _translate_long_text(body)
                 bi_subj = _call_llm(f"将以下邮件主题翻译为地道商务英文，只返回翻译结果：\n{subject}")
-                return json_resp({"subject": subject.strip() + " / " + bi_subj.strip(), "body": "\n".join(merged)})
+                sep = "\n\n" + "-" * 36 + "\n\n"
+                return json_resp({
+                    "subject": subject.strip() + " / " + bi_subj.strip(),
+                    "body": body.strip() + sep + en_body.strip()
+                })
             else:
                 return json_resp({"subject": subject, "body": body})
         except Exception as e:
