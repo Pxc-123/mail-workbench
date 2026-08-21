@@ -949,7 +949,54 @@ def _summarize_materials(uid, material_ids):
         return ""
     return "\n\n".join(chunks)[:4000]
 
-def build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None):
+def _extract_highlights_from_materials(uid, material_ids):
+    """从用户上传的展会资料中提取「核心亮点」候选句（规模/特色/优势等）。
+    启发式扫描正文，挑出包含展会卖点关键词、长度适中且不重复的短句。"""
+    if not material_ids:
+        return []
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT file_path FROM materials WHERE id IN (%s) AND (user_id=? OR user_id=0)" %
+            ",".join("?" for _ in material_ids), list(material_ids) + [uid]).fetchall()
+    finally:
+        conn.close()
+    kw = ["规模", "面积", "万", "平米", "㎡", "展商", "观众", "国家", "企业", "亮点",
+          "特色", "优势", "核心", "最大", "领先", "首选", "权威", "专业", "唯一", "覆盖",
+          "买家", "采购商", "国际", "全球", "精彩", "不容错过", "一站式", "高效"]
+    out, seen = [], set()
+    for r in rows:
+        text = _extract_material_text(r["file_path"], max_chars=3000)
+        if not text:
+            continue
+        for ln in text.replace("\r\n", "\n").split("\n"):
+            ln = ln.strip()
+            if not (8 <= len(ln) <= 48):
+                continue
+            if any(k in ln for k in kw):
+                if ln not in seen:
+                    seen.add(ln)
+                    out.append(ln)
+        if len(out) >= 6:
+            break
+    return out[:6]
+
+def _fetch_exhibition_highlights(ex):
+    """实时检索该展会的亮点/规模信息，作为核心亮点补充（best-effort，失败返回空列表）。"""
+    try:
+        r = _fetch_industry_news(ex + " 展会 规模 参展商 亮点")
+        items = r.get("items") or []
+        out = []
+        for it in items[:5]:
+            t = (it.get("title") if isinstance(it, dict) else str(it)) or ""
+            t = t.strip()
+            if t:
+                out.append(t[:32])
+        return out
+    except Exception:
+        return []
+
+def build_email(exhibition, customer_type, scene, tone, custom_input,  signature, uid=None, material_ids=None):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
@@ -976,6 +1023,18 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
 
     # 获取展会特色数据：优先用户在「展会资料库」维护的真实资料，其次内置检索资料
     profile = get_exhibition_profile(ex, uid)
+    # 核心亮点升级：内置展会资料 + 上传附件提取 + 实时网络检索（带兜底，网络失败不影响生成）
+    hl_material = _extract_highlights_from_materials(uid, material_ids)
+    hl_news = _fetch_exhibition_highlights(ex)
+    merged_hl = []
+    seen = set()
+    for h in hl_material + hl_news + list(profile.get("highlights") or []):
+        h = (h or "").strip().rstrip("。，,．.；; ").strip()
+        if h and h not in seen:
+            seen.add(h)
+            merged_hl.append(h)
+    if merged_hl:
+        profile["highlights"] = merged_hl[:3]
     ex_city = profile.get("city", "")
     ex_scale = profile.get("scale", "")
     ex_highlights = profile.get("highlights", [])
