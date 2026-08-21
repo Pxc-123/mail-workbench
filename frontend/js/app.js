@@ -1622,7 +1622,7 @@ async function uploadModal() {
     const matched = exs.find(e => e.name === exName);
     if (matched) { exId = matched.id; }
     else {
-      const cr = await api("POST", "/api/exhibitions", { name: exName, city: "", date_text: "", note: "上传资料时创建" });
+      const cr = await api("POST", "/api/exhibitions", { name: exName, city: "", date_text: "", note: "" });
       if (cr.ok) {
         exId = cr.data?.id;
         toast("已自动新建展会：" + exName);

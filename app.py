@@ -727,8 +727,14 @@ def get_exhibition_profile(name, uid=None):
                     merged["city"] = best["city"]
                 if best["date_hint"]:
                     merged["date_hint"] = best["date_hint"]
-                if best["highlights"]:
-                    merged["highlights"] = best["highlights"]
+                # DB 的 note 不再直接覆盖内置核心亮点；
+                # 仅当内置完全没有该展会资料时，才把 note 当作备用亮点（且过滤机械文案）
+                _db_hl = (best.get("highlights") or [])
+                if not builtin and _db_hl:
+                    _skip = {"上传资料时创建", "自动创建", "", " "}
+                    _real = [h for h in _db_hl if h.strip() not in _skip]
+                    if _real:
+                        merged["highlights"] = _real
                 merged["_from_db"] = True
             return merged
     except Exception:
