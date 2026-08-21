@@ -362,6 +362,18 @@ def init_db():
         error TEXT,
         sent_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT,
+        payload TEXT NOT NULL,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS backup_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
     """)
     # 预置展会（全局共享只读，存到 user_id=0 表示系统级）
     c.execute("SELECT COUNT(*) AS n FROM exhibitions WHERE user_id=0")
@@ -843,7 +855,95 @@ def _build_ex_info(ex, profile):
         lines.append("✨ 核心亮点：" + "、".join(hl[:3]))
     return "\n".join(lines)
 
-def build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid=None):
+# ---------------------------- 资料文本提取 ----------------------------
+_MATERIAL_TEXT_CACHE = {}
+def _extract_material_text(file_path, max_chars=4000):
+    """从 PDF/Word/文本文件中提取前 max_chars 字文本，用于邮件生成时把资料内容写进邮件。
+    失败时返回空串（不抛错），保证邮件生成不会因为坏资料卡住。"""
+    if not file_path or not os.path.exists(file_path):
+        return ""
+    cache_key = (file_path, max_chars, int(os.path.getmtime(file_path)))
+    if cache_key in _MATERIAL_TEXT_CACHE:
+        return _MATERIAL_TEXT_CACHE[cache_key]
+    text = ""
+    try:
+        low = file_path.lower()
+        if low.endswith(".pdf"):
+            try:
+                from pypdf import PdfReader
+                r = PdfReader(file_path)
+                parts = []
+                for i, page in enumerate(r.pages[:8]):  # 最多读前 8 页
+                    try:
+                        parts.append(page.extract_text() or "")
+                    except Exception:
+                        continue
+                text = "\n".join(parts)
+            except Exception as e:
+                print("[material] PDF 读取失败 %s: %s" % (file_path, e), flush=True)
+        elif low.endswith((".docx", ".doc")):
+            try:
+                import docx as _docx
+                d = _docx.Document(file_path)
+                parts = [p.text for p in d.paragraphs if p.text and p.text.strip()]
+                for t in d.tables[:5]:
+                    for row in t.rows:
+                        parts.append(" | ".join(c.text.strip() for c in row.cells if c.text))
+                text = "\n".join(parts)
+            except Exception as e:
+                print("[material] Word 读取失败 %s: %s" % (file_path, e), flush=True)
+        elif low.endswith((".txt", ".md", ".csv")):
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        elif low.endswith((".xlsx", ".xls")):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+                parts = []
+                for sh in wb.sheetnames[:3]:
+                    ws = wb[sh]
+                    for row in ws.iter_rows(max_row=80, values_only=True):
+                        parts.append(" | ".join(str(c) for c in row if c is not None))
+                text = "\n".join(parts)
+            except Exception as e:
+                print("[material] Excel 读取失败 %s: %s" % (file_path, e), flush=True)
+    except Exception as e:
+        print("[material] 解析异常：%s" % e, flush=True)
+    text = (text or "").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "…"
+    _MATERIAL_TEXT_CACHE[cache_key] = text
+    return text
+
+def _summarize_materials(uid, material_ids):
+    """根据用户选中的材料 ID 列表，汇总为一段「资料要点」文字。
+    优先提取每份资料前 800 字做摘要，用换行拼接，去重相似的句子。"""
+    if not material_ids:
+        return ""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id,name,file_path FROM materials WHERE id IN (%s) AND (user_id=? OR user_id=0)" %
+            ",".join("?" for _ in material_ids),
+            list(material_ids) + [uid]).fetchall()
+    finally:
+        conn.close()
+    chunks = []
+    for r in rows:
+        body = _extract_material_text(r["file_path"], max_chars=1200)
+        if not body:
+            continue
+        body = body.replace("\r\n", "\n")
+        # 简单清洗：把空行合并、去头尾空白
+        lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+        snippet = " ".join(lines[:8])[:800]
+        if snippet:
+            chunks.append(f"【{r['name']}】{snippet}")
+    if not chunks:
+        return ""
+    return "\n\n".join(chunks)[:4000]
+
+def build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
@@ -878,6 +978,9 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
     opening = random.choice(profile["openings"]) if profile.get("openings") else random.choice(OPENING_VARIANTS)
     closing = random.choice(CLOSING_VARIANTS)
     ex_info_para = _build_ex_info(ex, profile)
+    # 用户选定的资料内容：让邮件真正反映最新资料（PDF/Word 全文摘要）
+    material_summary = _summarize_materials(uid, material_ids or [])
+    mat_block = f"【资料要点】\n{material_summary}\n\n" if material_summary else ""
 
     # 称呼占位（发送时按客户替换）
     salutation = "尊敬的 {联系人姓名}（{客户名称}）："
@@ -958,7 +1061,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input, signature,
         lines = [l for l in scene_body.split("\n") if l.strip()]
         scene_body = "\n".join(lines[:3])  # 只保留前3段
 
-    body = f"{salutation}\n\n{scene_body}{tone_tail}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
+    body = f"{salutation}\n\n{scene_body}{mat_block}{tone_tail}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
     subject_map = {
         "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
@@ -1144,6 +1247,25 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/exhibitions":
                 rows = conn.execute("SELECT * FROM exhibitions WHERE user_id=0 OR user_id=?", (uid,)).fetchall()
                 return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/exhibitions/summary":
+                # 含每个展会的资料数（用于展会管理页/AI 邮件页下拉统计）
+                rows = conn.execute(
+                    "SELECT e.id,e.user_id,e.name,e.city,e.date_text,e.note,"
+                    "  (SELECT COUNT(*) FROM materials m WHERE m.exhibition_id=e.id) AS material_count "
+                    "FROM exhibitions e WHERE e.user_id=0 OR e.user_id=?",
+                    (uid,)).fetchall()
+                return json_resp([row_to_dict(r) for r in rows])
+            if path == "/api/drafts":
+                rows = conn.execute("SELECT * FROM drafts WHERE user_id=? ORDER BY updated_at DESC", (uid,)).fetchall()
+                out = []
+                for r in rows:
+                    d = row_to_dict(r)
+                    try:
+                        d["payload"] = json.loads(d.get("payload") or "{}")
+                    except Exception:
+                        d["payload"] = {}
+                    out.append(d)
+                return json_resp(out)
             if path == "/api/news/search":
                 # 获取真实行业新闻（食品包装/出海/展会相关），用于邮件场景2
                 q = self._query_param("q") or "食品包装机械 海外市场 出展"
@@ -1213,6 +1335,68 @@ class Handler(BaseHTTPRequestHandler):
                 "Content-Disposition": 'attachment; filename="%s"' % fname,
                 "Content-Length": str(len(data)),
             }, data
+        if path == "/api/admin/backup/status":
+            # 部署稳定性：返回数据健康度，供管理员中心展示
+            import os as _os
+            db_size = _os.path.getsize(DB_PATH) if _os.path.exists(DB_PATH) else 0
+            upload_count, upload_bytes = 0, 0
+            if _os.path.isdir(UPLOAD_DIR):
+                for root, dirs, files in _os.walk(UPLOAD_DIR):
+                    for fn in files:
+                        fp = _os.path.join(root, fn)
+                        try:
+                            upload_count += 1
+                            upload_bytes += _os.path.getsize(fp)
+                        except Exception:
+                            pass
+            tables_info = []
+            try:
+                conn2 = get_db()
+                for t in ("users","customers","exhibitions","materials","templates","email_logs","drafts","tags","todos","settings"):
+                    try:
+                        n = conn2.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]
+                        tables_info.append({"name": t, "rows": n})
+                    except Exception:
+                        tables_info.append({"name": t, "rows": -1})
+                conn2.close()
+            except Exception:
+                pass
+            # 上次备份时间（从 backup_meta 读）
+            conn3 = get_db()
+            last_backup = conn3.execute("SELECT value FROM backup_meta WHERE key='last_backup_at'").fetchone()
+            last_source = conn3.execute("SELECT value FROM backup_meta WHERE key='last_backup_source'").fetchone()
+            conn3.close()
+            return json_resp({
+                "cos_enabled": COS_ENABLED,
+                "cos_bucket": os.environ.get("COS_BUCKET", ""),
+                "db_path": DB_PATH,
+                "db_size_bytes": db_size,
+                "upload_count": upload_count,
+                "upload_bytes": upload_bytes,
+                "tables": tables_info,
+                "last_backup_at": (last_backup["value"] if last_backup else ""),
+                "last_backup_source": (last_source["value"] if last_source else ""),
+                "now": now_iso(),
+            })
+        if path == "/api/admin/backup/auto-trigger":
+            # 立即把 DB + 附件全量同步到 COS（管理员可手动触发）
+            db_ok = cos_upload_db()
+            up_count = 0
+            if _os.path.isdir(UPLOAD_DIR):
+                for root, dirs, files in _os.walk(UPLOAD_DIR):
+                    for fn in files:
+                        fp = _os.path.join(root, fn)
+                        if cos_upload_attachment(fp):
+                            up_count += 1
+            # 写 backup_meta
+            try:
+                c4 = get_db()
+                c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_at',?)", (now_iso(),))
+                c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_source','admin-manual')",)
+                c4.commit(); c4.close()
+            except Exception:
+                pass
+            return json_resp({"ok": True, "db_synced": db_ok, "uploads_synced": up_count})
         return json_resp({"error": "not found"}, 404)
 
     def admin_post(self, path, admin):
@@ -1559,7 +1743,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_resp({"ok": True})
             if path == "/api/ai/generate":
                 subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
-                                            d.get("tone"), d.get("custom_input"), d.get("signature"), uid)
+                                            d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
+                                            material_ids=d.get("material_ids"))
                 return json_resp({"subject": subject, "body": body})
             if path == "/api/ai/translate":
                 return self.translate_email(d)
@@ -1569,6 +1754,14 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
                 new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 return json_resp({"ok": True, "id": new_id})
+            if path == "/api/drafts":
+                title = (d.get("title") or "").strip() or "未命名草稿"
+                payload = json.dumps(d.get("payload") or {}, ensure_ascii=False)
+                cur = conn.execute(
+                    "INSERT INTO drafts (user_id,title,payload,created_at,updated_at) VALUES (?,?,?,?,?)",
+                    (uid, title, payload, now_iso(), now_iso()))
+                conn.commit()
+                return json_resp({"ok": True, "id": cur.lastrowid})
             if path == "/api/materials":
                 # 接收文件内容（base64）或直接记录 URL；演示以名称 + 路径记录
                 name = d.get("name") or "资料"
@@ -1685,6 +1878,57 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute(f"UPDATE templates SET {','.join(fields)} WHERE id=? AND user_id=?", vals+[tid, uid])
                     conn.commit()
                 return json_resp({"ok": True})
+            if path.startswith("/api/materials/"):
+                # 编辑资料：支持改名 / 改所属展会 / 替换文件
+                mid = path.split("/")[-1]
+                row = conn.execute("SELECT * FROM materials WHERE id=? AND (user_id=? OR user_id=0)", (mid, uid)).fetchone()
+                if not row:
+                    return json_resp({"error": "资料不存在或无权限"}, 404)
+                fields, vals = [], []
+                if "name" in d and d["name"]:
+                    fields.append("name=?"); vals.append(d["name"])
+                if "exhibition_id" in d:
+                    new_ex_id = d["exhibition_id"]
+                    # 若传入字符串（新建展会名），先查或建
+                    if isinstance(new_ex_id, str) and new_ex_id.strip():
+                        nm = new_ex_id.strip()
+                        m_ex = conn.execute("SELECT id FROM exhibitions WHERE name=? AND (user_id=? OR user_id=0)", (nm, uid)).fetchone()
+                        if m_ex:
+                            new_ex_id = m_ex["id"]
+                        else:
+                            cur = conn.execute("INSERT INTO exhibitions (user_id,name,city,date_text,note) VALUES (?,?,?,?,?)",
+                                                (uid, nm, "", "", "编辑资料时新建"))
+                            new_ex_id = cur.lastrowid
+                    fields.append("exhibition_id=?"); vals.append(new_ex_id)
+                if "content_b64" in d and d["content_b64"]:
+                    import base64 as _b64
+                    old_path = row["file_path"] or ""
+                    name = d.get("name") or row["name"] or "资料"
+                    new_path = os.path.join(UPLOAD_DIR, f"{uid}_{int(datetime.datetime.now().timestamp())}_{name}")
+                    with open(new_path, "wb") as f:
+                        f.write(_b64.b64decode(d["content_b64"]))
+                    if os.path.exists(new_path):
+                        cos_upload_attachment(new_path)
+                    fields.append("file_path=?"); vals.append(new_path)
+                if fields:
+                    conn.execute(f"UPDATE materials SET {','.join(fields)} WHERE id=?", vals+[mid])
+                    conn.commit()
+                return json_resp({"ok": True})
+            if path.startswith("/api/drafts/"):
+                did = path.split("/")[-1]
+                row = conn.execute("SELECT id FROM drafts WHERE id=? AND user_id=?", (did, uid)).fetchone()
+                if not row:
+                    return json_resp({"error": "草稿不存在"}, 404)
+                fields, vals = [], []
+                if "title" in d and d["title"]:
+                    fields.append("title=?"); vals.append(d["title"])
+                if "payload" in d:
+                    fields.append("payload=?"); vals.append(json.dumps(d["payload"], ensure_ascii=False))
+                if fields:
+                    fields.append("updated_at=?"); vals.append(now_iso())
+                    conn.execute(f"UPDATE drafts SET {','.join(fields)} WHERE id=?", vals+[did])
+                    conn.commit()
+                return json_resp({"ok": True})
         finally:
             conn.close()
         return json_resp({"error": "not found"}, 404)
@@ -1717,6 +1961,16 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/materials/"):
                 mid = path.split("/")[-1]
                 conn.execute("DELETE FROM materials WHERE id=? AND (user_id=? OR user_id=0)", (mid, uid))
+            elif path.startswith("/api/drafts/"):
+                did = path.split("/")[-1]
+                conn.execute("DELETE FROM drafts WHERE id=? AND user_id=?", (did, uid))
+            elif path.startswith("/api/exhibitions/"):
+                eid = path.split("/")[-1]
+                # 拒绝删除全局共享展会（user_id=0），只允许删除本人建的
+                row = conn.execute("SELECT user_id FROM exhibitions WHERE id=?", (eid,)).fetchone()
+                if row and int(row["user_id"]) == 0:
+                    return json_resp({"error": "系统级展会不能删除，可在「展会管理」编辑后停用"}, 400)
+                conn.execute("DELETE FROM exhibitions WHERE id=? AND user_id=?", (eid, uid))
             else:
                 return json_resp({"error":"not found"},404)
             conn.commit()
@@ -2174,11 +2428,27 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 def main():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    cos_data_source = "local"
     if COS_ENABLED:
         # 容器本地文件系统是临时的；启动时先从 COS 拉取最新数据库与附件
-        cos_download_db()
+        if cos_download_db():
+            cos_data_source = "cos"
+        else:
+            cos_data_source = "local-first-boot"
         cos_download_all_uploads()
     init_db()
+    # 写启动健康度到 backup_meta（让管理员中心能展示"上次启动源"）
+    try:
+        c = get_db()
+        c.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_boot_at',?)", (now_iso(),))
+        c.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_boot_source',?)", (cos_data_source,))
+        c.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('cos_enabled',?)",
+                  ("1" if COS_ENABLED else "0",))
+        c.commit(); c.close()
+    except Exception:
+        pass
+    # 后台 COS 同步 worker
+    _schedule_cos_db_sync()
     if COS_ENABLED:
         # 把初始化后的库（含默认 admin 账号）推送到 COS，确保新部署也有备份
         cos_upload_db()

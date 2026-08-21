@@ -22,7 +22,7 @@
     const u = curUser();
     if (!u) return null;
     const all = lsGet(LS_DATA, {});
-    if (!all[u]) all[u] = { seq: 1, todos: [], customers: [], tags: [], templates: [], materials: [], logs: [], settings: { signature: "招展顾问", default_interval: 5 } };
+    if (!all[u]) all[u] = { seq: 1, todos: [], customers: [], tags: [], templates: [], materials: [], logs: [], exhibitions: [], drafts: [], settings: { signature: "招展顾问", default_interval: 5 } };
     return all[u];
   }
   function setData(d) { const all = lsGet(LS_DATA, {}); all[curUser()] = d; lsSet(LS_DATA, all); }
@@ -134,6 +134,8 @@
   function seedDemo(d) {
     const today = new Date();
     const fmt = n => { const x = new Date(today); x.setDate(x.getDate() + n); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+    // 预置展会（含城市/档期/备注，便于展会管理页直接展示）
+    if (!d.exhibitions.length) d.exhibitions = EXHIBITIONS.map(e => ({ ...e, city: "", date_text: "", note: "", user_id: 1, created_at: nowISO() }));
     const presets = ["预制菜客户", "调味品客户", "零食客户", "原料客户", "高意向", "待跟进"];
     presets.forEach(p => d.tags.push({ id: nid(d), name: p }));
     [["XX预制菜工厂", "王总", "wang@xx-food.com", "13800000001", "SIAL 巴黎食品展", "预制菜客户,高意向"],
@@ -177,12 +179,13 @@
       return { token: "local-" + uname, user: uobj };
     }
 
-    if (method === "GET" && path === "/api/exhibitions") return EXHIBITIONS;
-
     const d = getData();
     if (!d) return method === "GET" ? [] : {};
 
     if (method === "GET") {
+      if (path === "/api/exhibitions") return d.exhibitions.slice();
+      if (path === "/api/exhibitions/summary") return d.exhibitions.map(e => ({ ...e, material_count: d.materials.filter(m => m.exhibition_id == e.id).length, user_id: e.user_id || 1 }));
+      if (path === "/api/drafts") return d.drafts.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
       if (path === "/api/todos") return d.todos.slice().sort((a, b) => (a.done - b.done));
       if (path === "/api/customers") return d.customers.slice();
       if (path === "/api/customers/stats") {
@@ -209,6 +212,16 @@
     }
 
     if (method === "POST") {
+      if (path === "/api/exhibitions") {
+        const name = (body.name || "").trim();
+        if (!name) throw new Error("展会名称必填");
+        const e = { id: nid(d), name, city: body.city || "", date_text: body.date_text || "", note: body.note || "", user_id: 1, created_at: nowISO() };
+        d.exhibitions.push(e); setData(d); return e;
+      }
+      if (path === "/api/drafts") {
+        const t = { id: nid(d), title: (body.title || "").trim() || "未命名草稿", payload: JSON.stringify(body.payload || {}), created_at: nowISO(), updated_at: nowISO() };
+        d.drafts.push(t); setData(d); return { ok: true, id: t.id };
+      }
       if (path === "/api/settings") { d.settings = Object.assign({}, d.settings, body); setData(d); return {}; }
       if (path === "/api/todos") {
         const t = { id: nid(d), title: body.title || "未命名", due_time: body.due_time || null, bind_date: body.bind_date || null, priority: body.priority || "中", done: 0 };
@@ -289,7 +302,47 @@
     }
 
     if (method === "PATCH") {
-      const m = path.match(/^\/api\/todos\/(\d+)$/);
+      let m = path.match(/^\/api\/drafts\/(\d+)$/);
+      if (m) {
+        const t = d.drafts.find(x => x.id === +m[1]);
+        if (t) {
+          if (body.title) t.title = body.title;
+          if (body.payload !== undefined) t.payload = JSON.stringify(body.payload);
+          t.updated_at = nowISO(); setData(d);
+        }
+        return { ok: true };
+      }
+      m = path.match(/^\/api\/exhibitions\/(\d+)$/);
+      if (m) {
+        const e = d.exhibitions.find(x => x.id === +m[1]);
+        if (e) { Object.assign(e, body); e.updated_at = nowISO(); setData(d); }
+        return { ok: true };
+      }
+      m = path.match(/^\/api\/materials\/(\d+)$/);
+      if (m) {
+        const mat = d.materials.find(x => x.id === +m[1]);
+        if (mat) {
+          if (body.name) mat.name = body.name;
+          if (body.exhibition_id !== undefined && body.exhibition_id !== null && body.exhibition_id !== "") {
+            let exId = body.exhibition_id;
+            if (typeof exId === "string" && exId.trim()) {
+              const found = d.exhibitions.find(e => e.name === exId.trim());
+              if (found) exId = found.id;
+              else {
+                const e = { id: nid(d), name: exId.trim(), city: "", date_text: "", note: "资料编辑时创建", user_id: 1, created_at: nowISO() };
+                d.exhibitions.push(e); exId = e.id;
+              }
+            }
+            mat.exhibition_id = exId || null;
+          } else if (body.exhibition_id === "" || body.exhibition_id === null) {
+            mat.exhibition_id = null;
+          }
+          if (body.content_b64) mat.content_b64 = body.content_b64;
+          mat.updated_at = nowISO(); setData(d);
+        }
+        return { ok: true };
+      }
+      m = path.match(/^\/api\/todos\/(\d+)$/);
       if (m) { const t = d.todos.find(x => x.id === +m[1]); if (t) { Object.assign(t, body); setData(d); } return t || {}; }
       throw new Error("not found");
     }
@@ -301,7 +354,16 @@
     }
 
     if (method === "DELETE") {
-      let m = path.match(/^\/api\/todos\/(\d+)$/);
+      let m = path.match(/^\/api\/drafts\/(\d+)$/);
+      if (m) { d.drafts = d.drafts.filter(x => x.id !== +m[1]); setData(d); return {}; }
+      m = path.match(/^\/api\/exhibitions\/(\d+)$/);
+      if (m) {
+        const id = +m[1];
+        d.exhibitions = d.exhibitions.filter(x => x.id !== id);
+        d.materials.forEach(x => { if (x.exhibition_id == id) x.exhibition_id = null; });
+        setData(d); return {};
+      }
+      m = path.match(/^\/api\/todos\/(\d+)$/);
       if (m) { d.todos = d.todos.filter(x => x.id !== +m[1]); setData(d); return {}; }
       m = path.match(/^\/api\/customers\/(\d+)$/);
       if (m) { d.customers = d.customers.filter(x => x.id !== +m[1]); setData(d); return {}; }

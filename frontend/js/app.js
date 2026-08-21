@@ -7,7 +7,7 @@ const STATE = {
   view: "home", sub: "todos",
   calYear: new Date().getFullYear(), calMonth: new Date().getMonth(),
   selectedDate: null,
-  gen: { exhibition: "", customer_type: "", scene: "", tone: "", subject: "", body: "" },
+  gen: { exhibition: "", customer_type: "", scene: "", tone: "", custom: "", subject: "", body: "" },
   attachments: [], // [{id,name}]
   lang: "zh", // 邮件语言: zh / bilingual / en
   origMail: { subject: "", body: "" }, // 保存原始中文邮件，用于翻译切换
@@ -176,11 +176,12 @@ function render() {
   $all(".nav-group").forEach(g => g.classList.toggle("open", g.querySelector(`.nav-item[data-view="${STATE.view}"]`)));
   $all(".nav-leaf").forEach(x => x.classList.toggle("active", x.dataset.view === STATE.view && x.dataset.sub === STATE.sub));
   const c = $("#content");
+  flushDraftOnLeave(); // 离开页面/切换菜单前把未保存的邮件草稿落盘
   c.innerHTML = "";
   if (STATE.view === "home") c.appendChild(STATE.sub === "calendar" ? viewCalendar() : viewHome());
   else if (STATE.view === "ai") c.appendChild(STATE.sub === "gen" ? viewGen() : STATE.sub === "tpl" ? viewTemplates() : viewLogs());
   else if (STATE.view === "cust") c.appendChild(STATE.sub === "list" ? viewCustomers() : viewTags());
-  else if (STATE.view === "expo") c.appendChild(viewExpo());
+  else if (STATE.view === "expo") c.appendChild(STATE.sub === "manage" ? viewExposManage() : viewExpo());
   else if (STATE.view === "set") c.appendChild(viewSettings());
   else if (STATE.view === "admin") c.appendChild(viewAdmin());
 }
@@ -453,31 +454,237 @@ async function getCustTypes() {
 const SCENES = [["1", "初次开发陌生客户"], ["2", "跟进意向客户推送最新行业新闻"], ["3", "通知展位余量紧张催单"], ["4", "展会补贴政策通知"], ["5", "发送参展报价方案"], ["6", "客户跟进回访"], ["7", "参展感谢与维系"]];
 const TONES = ["正式商务", "简洁干练", "温和友好", "简短"];
 
+/* ===== 草稿箱：自动保存 + 恢复（双保险：后端 drafts 表 + localStorage） ===== */
+const DRAFT_LS_KEY = "wb_draft_autosave_v1";
+let _draftTimer = null;
+let _draftDirty = false;
+
+function _draftField(id, fallback) { const e = document.getElementById(id); return e ? e.value : fallback; }
+
+// 收集当前编辑中的表单状态
+function collectDraftPayload() {
+  return {
+    exhibition: _draftField("cfg-ex", STATE.gen.exhibition || ""),
+    customer_type: _draftField("cfg-ct", STATE.gen.customer_type || ""),
+    scene: _draftField("cfg-sc", STATE.gen.scene || ""),
+    tone: _draftField("cfg-tn", STATE.gen.tone || ""),
+    custom: _draftField("cfg-custom", STATE.gen.custom || ""),
+    subject: _draftField("pv-subject", STATE.gen.subject || ""),
+    body: _draftField("pv-body", STATE.gen.body || ""),
+    attachments: STATE.attachments.map(a => ({ id: a.id, name: a.name })),
+    lang: STATE.lang || "zh"
+  };
+}
+
+function draftTitle(p) {
+  const sceneName = (SCENES.find(s => s[0] === p.scene) || {})[1] || "";
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, "0"), dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0"), mi = String(now.getMinutes()).padStart(2, "0");
+  return (p.exhibition || "未选展会") + " · " + (sceneName || "邮件草稿") + " · " + mm + "-" + dd + " " + hh + ":" + mi;
+}
+
+// 保存到后端 drafts 表（持久化，重部署不丢）+ localStorage（刷新秒恢复）
+async function saveDraftPayload(p) {
+  let did = localStorage.getItem("wb_current_draft_id");
+  if (did) {
+    await api("PATCH", "/api/drafts/" + did, { title: draftTitle(p), payload: p });
+  } else {
+    const r = await api("POST", "/api/drafts", { title: draftTitle(p), payload: p });
+    if (r.ok && r.data && r.data.id) localStorage.setItem("wb_current_draft_id", String(r.data.id));
+  }
+  localStorage.setItem(DRAFT_LS_KEY, JSON.stringify({ t: Date.now(), p }));
+}
+
+async function saveDraftNow(silent) {
+  const p = collectDraftPayload();
+  if (!p.subject && !p.body && !p.custom) { _draftDirty = false; if (!silent) toast("当前没有可保存的内容"); return null; }
+  try {
+    await saveDraftPayload(p);
+    _draftDirty = false;
+    if (!silent) toast("💾 草稿已保存");
+  } catch (e) {
+    // 后端不可达时降级为仅本机保存
+    localStorage.setItem(DRAFT_LS_KEY, JSON.stringify({ t: Date.now(), p }));
+    _draftDirty = false;
+    if (!silent) toast("后端保存失败，已存本机浏览器：" + e.message);
+  }
+  return p;
+}
+
+function markDraftDirty() { _draftDirty = true; }
+
+// 刷新右侧「当前附件」提示
+function refreshAttInfo() {
+  const el_ = document.getElementById("att-info");
+  if (el_) el_.textContent = "当前附件：" + (STATE.attachments.length ? STATE.attachments.map(a => a.name).join("、") : "无");
+}
+
+// 10 秒自动保存 + 关页前 localStorage 兜底
+function ensureAutoSave() {
+  if (_draftTimer) return;
+  _draftTimer = setInterval(() => { if (_draftDirty) saveDraftNow(true); }, 10000);
+  window.addEventListener("beforeunload", () => {
+    if (_draftDirty) {
+      const p = collectDraftPayload();
+      if (p.subject || p.body || p.custom) localStorage.setItem(DRAFT_LS_KEY, JSON.stringify({ t: Date.now(), p }));
+    }
+  });
+}
+
+// 切换页面/刷新前把未保存内容写入 localStorage（后端异步留给定时器）
+function flushDraftOnLeave() {
+  if (!_draftDirty) return;
+  const p = collectDraftPayload();
+  if (!p.subject && !p.body && !p.custom) { _draftDirty = false; return; }
+  localStorage.setItem(DRAFT_LS_KEY, JSON.stringify({ t: Date.now(), p }));
+  saveDraftPayload(p).catch(() => {});
+  _draftDirty = false;
+}
+
+// 把草稿数据写入当前表单（含 STATE + DOM）
+function applyDraftToForm(p) {
+  if (!p) return;
+  STATE.gen.exhibition = p.exhibition || "";
+  STATE.gen.customer_type = p.customer_type || "";
+  STATE.gen.scene = p.scene || SCENES[0][0];
+  STATE.gen.tone = p.tone || TONES[0];
+  STATE.gen.custom = p.custom || "";
+  STATE.gen.subject = p.subject || "";
+  STATE.gen.body = p.body || "";
+  STATE.attachments = (p.attachments || []).filter(a => a && a.id);
+  STATE.lang = p.lang || "zh";
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ""; };
+  set("cfg-ex", STATE.gen.exhibition); set("cfg-ct", STATE.gen.customer_type);
+  set("cfg-sc", STATE.gen.scene); set("cfg-tn", STATE.gen.tone);
+  set("cfg-custom", STATE.gen.custom); set("pv-subject", STATE.gen.subject); set("pv-body", STATE.gen.body);
+  refreshAttInfo();
+  updateLangButtons();
+  _draftDirty = false;
+}
+
+// 进入生成页时，若有本机未完成草稿且当前表单为空，自动恢复
+function restoreLocalDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_LS_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw); const p = s.p || s;
+    if (!p || (!p.subject && !p.body && !p.custom)) return;
+    const cur = collectDraftPayload();
+    if (cur.subject || cur.body || cur.custom) return; // 当前已有内容（如刚用模板）不覆盖
+    setTimeout(() => { applyDraftToForm(p); toast("↩ 已恢复上次未完成的草稿"); }, 150);
+  } catch (e) {}
+}
+
+// 草稿箱面板：后端草稿 + 本机草稿
+async function openDraftsPanel() {
+  let drafts = [];
+  try {
+    const r = await api("GET", "/api/drafts");
+    drafts = (r.data || []).map(d => { let p = {}; try { p = JSON.parse(d.payload || "{}"); } catch (e) {} return { id: d.id, title: d.title || "未命名草稿", updated_at: d.updated_at || "", p }; });
+  } catch (e) { /* 后端不可达时仅显示本地草稿 */ }
+  let lsDraft = null;
+  try {
+    const raw = localStorage.getItem(DRAFT_LS_KEY);
+    if (raw) {
+      const s = JSON.parse(raw); const p = s.p || s;
+      if (p && (p.subject || p.body || p.custom)) lsDraft = { id: "local", title: "本机未同步草稿", updated_at: new Date(s.t || Date.now()).toISOString(), p, local: true };
+    }
+  } catch (e) {}
+  const list = [];
+  if (lsDraft) list.push(lsDraft);
+  drafts.forEach(d => list.push(d));
+  const rows = list.length ? list.map(d => {
+    const preview = (d.p.subject || "(无主题)").slice(0, 46);
+    const meta = (d.updated_at || "").replace("T", " ").slice(5, 16) || "刚刚";
+    const badge = d.local ? '<span style="margin-left:6px;font-size:11px;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;vertical-align:middle">本机未同步</span>' : "";
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;background:#fff">
+      <div style="min-width:0;flex:1">
+        <div style="font-weight:600;font-size:13px;color:#111">${esc(d.title)}${badge}</div>
+        <div style="font-size:12px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(meta)} · ${esc(preview)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-sm" data-draft-restore="${d.id}" style="background:#eef2ff;color:#4f46e5">↩ 恢复</button>
+        <button class="btn btn-sm btn-danger" data-draft-del="${d.id}">删除</button>
+      </div>
+    </div>`;
+  }).join("") : '<div class="muted" style="padding:18px;text-align:center">暂无草稿。编辑邮件时每 10 秒自动保存，退出页面/关闭浏览器后回来可继续编辑。</div>';
+  const html = `
+    <div style="font-size:12px;color:#888;margin-bottom:10px">草稿双保险：自动保存到服务器（重新部署不丢）+ 本机浏览器。点击「恢复」继续编辑，同一条草稿会被后续自动保存覆盖。</div>
+    <div style="max-height:44vh;overflow:auto">${rows}</div>
+    <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:12px;color:#aaa">恢复后请记得手动点一次「💾 保存草稿」固定到服务器</span>
+      <button class="btn btn-sm" id="draft-new" style="background:#f3f4f6">🗑 清空当前编辑，开始新草稿</button>
+    </div>`;
+  openModal("📂 草稿箱", html, "modal-wide");
+  setTimeout(() => {
+    $all("[data-draft-restore]").forEach(b => b.onclick = async () => {
+      const id = b.dataset.draftRestore;
+      const d = id === "local" ? lsDraft : drafts.find(x => String(x.id) === String(id));
+      if (!d) return;
+      applyDraftToForm(d.p);
+      if (id !== "local") localStorage.setItem("wb_current_draft_id", String(id));
+      closeModal(); toast("已恢复草稿，可继续编辑");
+    });
+    $all("[data-draft-del]").forEach(b => b.onclick = async () => {
+      const id = b.dataset.draftDel;
+      if (!confirm("确定删除这条草稿？")) return;
+      if (id === "local") localStorage.removeItem(DRAFT_LS_KEY);
+      else { try { await api("DELETE", "/api/drafts/" + id); } catch (e) {} }
+      closeModal(); openDraftsPanel(); toast("已删除");
+    });
+    const nb = $("#draft-new");
+    if (nb) nb.onclick = () => {
+      localStorage.removeItem("wb_current_draft_id");
+      localStorage.removeItem(DRAFT_LS_KEY);
+      STATE.gen = { exhibition: "", customer_type: "", scene: "", tone: "", custom: "", subject: "", body: "" };
+      STATE.attachments = []; STATE.lang = "zh";
+      closeModal(); render(); toast("已清空，开始新草稿");
+    };
+  }, 0);
+}
+
 function viewGen() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "🤖 AI 一键生成邮件模板"));
   wrap.appendChild(el("div", { class: "section-sub" }, "左侧配置参数 → 右侧预览/编辑 → 保存模板或批量发送（支持变量 {客户名称}{联系人姓名}{销售姓名} 自动替换）"));
+  // 草稿工具栏：保存草稿 / 草稿箱
+  const draftBar = el("div", { style: "display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap" });
+  draftBar.appendChild(el("span", { style: "font-size:12px;color:#888" }, "💾 草稿双保险："));
+  const bSaveDraft = el("button", { class: "btn btn-sm", style: "background:#eef2ff;color:#4f46e5;font-weight:600" }, "保存草稿");
+  bSaveDraft.onclick = () => saveDraftNow(false);
+  const bOpenDrafts = el("button", { class: "btn btn-sm", style: "background:#fef3c7;color:#92400e;font-weight:600" }, "📂 草稿箱");
+  bOpenDrafts.onclick = openDraftsPanel;
+  draftBar.appendChild(bSaveDraft);
+  draftBar.appendChild(bOpenDrafts);
+  draftBar.appendChild(el("span", { style: "font-size:12px;color:#aaa" }, "编辑中每 10 秒自动保存，误退出/关浏览器后回来可继续编辑"));
+  wrap.appendChild(draftBar);
   const split = el("div", { class: "split" });
 
   // 左：配置
   const left = el("div", { class: "card" });
   left.appendChild(el("div", { class: "label" }, "1. 选择目标展会"));
   const exSel = el("select", { class: "inp", id: "cfg-ex" });
-  getExhibitions().then(exs => { exs.forEach(e => exSel.appendChild(el("option", { value: e.name }, e.name))); STATE.gen.exhibition = exSel.value; });
+  getExhibitions().then(exs => {
+    exs.forEach(e => exSel.appendChild(el("option", { value: e.name }, e.name)));
+    if (STATE.gen.exhibition && [...exSel.options].some(o => o.value === STATE.gen.exhibition)) exSel.value = STATE.gen.exhibition;
+    else STATE.gen.exhibition = exSel.value;
+  });
   left.appendChild(exSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
-  const ctSel = el("select", { class: "inp" }, [el("option", { value: "" }, "加载中…")]);
+  const ctSel = el("select", { class: "inp", id: "cfg-ct" }, [el("option", { value: "" }, "加载中…")]);
   left.appendChild(ctSel);
   getCustTypes().then(types => {
     ctSel.innerHTML = "";
     types.forEach(t => ctSel.appendChild(el("option", { value: t }, t)));
-    if (types.length) STATE.gen.customer_type = ctSel.value;
+    if (STATE.gen.customer_type && [...ctSel.options].some(o => o.value === STATE.gen.customer_type)) ctSel.value = STATE.gen.customer_type;
+    else if (types.length) STATE.gen.customer_type = ctSel.value;
   });
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "3. 选择邮件场景"));
-  const scSel = el("select", { class: "inp" }, SCENES.map(s => el("option", { value: s[0] }, s[1])));
+  const scSel = el("select", { class: "inp", id: "cfg-sc" }, SCENES.map(s => el("option", { value: s[0] }, s[1])));
   left.appendChild(scSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "4. 选择语气风格"));
-  const tnSel = el("select", { class: "inp" }, TONES.map(t => el("option", { value: t }, t)));
+  const tnSel = el("select", { class: "inp", id: "cfg-tn" }, TONES.map(t => el("option", { value: t }, t)));
   left.appendChild(tnSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "5. 自定义补充（粘贴新闻/卖点素材，AI 会融入邮件）"));
   const custom = el("textarea", { class: "inp", id: "cfg-custom", placeholder: "例：加上欧盟 PPWR 包装法规新闻，重点突出展位余量不多。" });
@@ -517,11 +724,12 @@ function viewGen() {
     gen.textContent = "生成中…"; gen.disabled = true;
     const r = await api("POST", "/api/ai/generate", {
       exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
-      custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问"
+      custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
+      material_ids: STATE.attachments.map(a => a.id)
     });
     gen.textContent = "⚡ AI 一键生成邮件"; gen.disabled = false;
     if (!r.ok) { toast("生成失败"); return; }
-    STATE.gen = { exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, subject: r.data.subject, body: r.data.body };
+    STATE.gen = { exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, custom: custom.value, subject: r.data.subject, body: r.data.body };
     STATE.origMail = { subject: r.data.subject, body: r.data.body };
     STATE.lang = "zh";
     updateLangButtons();
@@ -616,6 +824,12 @@ function viewGen() {
   right.appendChild(el("div", { class: "var-hint", id: "att-info" }, "当前附件：无"));
   split.appendChild(right);
 
+  // 自动保存：表单变化标记 dirty → 10 秒定时保存；切页/关页前兜底
+  [exSel, ctSel, scSel, tnSel].forEach(s => s.addEventListener("change", markDraftDirty));
+  [custom, subj, body].forEach(t => t.addEventListener("input", markDraftDirty));
+  ensureAutoSave();
+  restoreLocalDraft();
+
   wrap.appendChild(split);
   return wrap;
 }
@@ -666,6 +880,7 @@ async function attachModal() {
         STATE.attachments.push({ id: newFile.id, name: newFile.name });
       }
       $("#att-info").textContent = "当前附件：" + STATE.attachments.map(a => a.name).join("、");
+      markDraftDirty();
       toast("已上传并绑定：" + f.name);
     }
     // 重新渲染弹窗内容
@@ -676,6 +891,7 @@ async function attachModal() {
   $("#att-ok").onclick = () => {
     STATE.attachments = $all(".att-chk:checked").map(c => { const m = mats.find(x => x.id == c.value); return { id: m.id, name: m.name }; });
     $("#att-info").textContent = "当前附件：" + (STATE.attachments.length ? STATE.attachments.map(a => a.name).join("、") : "无");
+    markDraftDirty();
     closeModal(); toast("已选择附件");
   };
 }
@@ -865,7 +1081,7 @@ function viewTemplates() {
       tr.appendChild(el("td", {}, tp.tone || "-"));
       const td = el("td");
       const use = el("button", { class: "btn btn-sm" }, "调用编辑");
-      use.onclick = () => { STATE.gen = { exhibition: tp.exhibition, customer_type: tp.customer_type, scene: SCENES.find(s => s[1] === tp.scene)?.[0] || "", tone: tp.tone, subject: tp.subject, body: tp.body };
+      use.onclick = () => { STATE.gen = { exhibition: tp.exhibition, customer_type: tp.customer_type, scene: SCENES.find(s => s[1] === tp.scene)?.[0] || "", tone: tp.tone, custom: "", subject: tp.subject, body: tp.body };
         STATE.view = "ai"; STATE.sub = "gen"; render();
         setTimeout(() => { if ($("#pv-subject")) { $("#pv-subject").value = tp.subject; $("#pv-body").value = tp.body; } }, 50);
         toast("已载入模板，可修改后发送");
@@ -1316,11 +1532,15 @@ function viewExpo() {
   const up = el("button", { class: "btn btn-primary" }, "⬆ 上传资料");
   up.onclick = uploadModal;
   upbar.appendChild(up); wrap.appendChild(upbar);
+  // 提示：资料默认绑定到具体展会（不再默认"通用"）
+  const hint = el("div", { class: "muted", style: "font-size:13px;margin:4px 0 12px;padding:8px 12px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#7a5a00" },
+    "💡 建议每个资料都指定所属展会——这样在「AI 邮件模板中心」选择目标展会时，可以自动勾选该展会下的所有资料，邮件内容会真正反映最新资料。");
+  wrap.appendChild(hint);
   api("GET", "/api/materials").then(async r => {
     const mats = r.data || [];
     const exs = (await api("GET", "/api/exhibitions")).data || [];
     const exName = id => (exs.find(e => e.id == id) || {}).name || "通用";
-    if (!mats.length) { wrap.appendChild(el("div", { class: "empty" }, "暂无资料，点击上传")); return; }
+    if (!mats.length) { wrap.appendChild(el("div", { class: "empty" }, "暂无资料，点击「⬆ 上传资料」开始添加")); return; }
     const t = el("table", { class: "tbl" });
     t.appendChild(el("tr", {}, ["资料名称", "所属展会", "上传时间", "操作"].map(h => el("th", {}, h))));
     mats.forEach(m => {
@@ -1329,45 +1549,189 @@ function viewExpo() {
       tr.appendChild(el("td", {}, exName(m.exhibition_id)));
       tr.appendChild(el("td", {}, m.created_at));
       const td = el("td");
+      const edit = el("button", { class: "btn btn-sm", style: "margin-right:6px" }, "✏️ 编辑");
+      edit.onclick = () => editMaterialModal(m, exs);
       const del = el("button", { class: "btn btn-sm btn-danger" }, "删除");
-      del.onclick = async () => { await api("DELETE", "/api/materials/" + m.id); render(); };
-      td.appendChild(del); tr.appendChild(td); t.appendChild(tr);
+      del.onclick = async () => {
+        if (!confirm("确认删除资料「" + m.name + "」？此操作不可恢复。")) return;
+        await api("DELETE", "/api/materials/" + m.id);
+        toast("已删除"); render();
+      };
+      td.appendChild(edit); td.appendChild(del); tr.appendChild(td); t.appendChild(tr);
     });
     wrap.appendChild(t);
   });
   return wrap;
 }
+
+async function editMaterialModal(m, exs) {
+  exs = exs || (await api("GET", "/api/exhibitions")).data || [];
+  const html = `<div class="cfg-row">
+    <label>资料名称</label>
+    <input id="em-name" class="inp" value="${esc(m.name || '')}">
+  </div>
+  <div class="cfg-row">
+    <label>所属展会 <span style="font-size:11px;color:#888;font-weight:normal">（可输入新名称或选择已有）</span></label>
+    <input id="em-ex" class="inp" list="em-ex-dl" value="${esc(exName(m.exhibition_id, exs))}" placeholder="输入或选择展会名称">
+    <datalist id="em-ex-dl">${exs.map(e => `<option value="${esc(e.name)}">`).join("")}</datalist>
+  </div>
+  <div class="cfg-row">
+    <label>替换文件（可选，不选则保留原文件）</label>
+    <input id="em-file" type="file" class="inp">
+    <div class="muted" style="font-size:12px;margin-top:4px">支持 PDF / Word / Excel / 图片，新文件将覆盖旧文件</div>
+  </div>
+  <button class="btn btn-primary btn-block" id="em-go">保存</button>`;
+  openModal("编辑资料", html);
+  $("#em-go").onclick = async () => {
+    const newName = ($("#em-name").value || "").trim() || m.name;
+    const exName = ($("#em-ex").value || "").trim();
+    const body = { name: newName };
+    if (exName) body.exhibition_id = exName; // 后端会判断是 ID 还是字符串
+    const f = $("#em-file").files[0];
+    if (f) {
+      const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
+      body.content_b64 = b64;
+    }
+    const r = await api("PATCH", "/api/materials/" + m.id, body);
+    if (!r.ok) { toast("保存失败：" + (r.data.error || "")); return; }
+    closeModal(); toast("已保存"); render();
+  };
+}
+
 async function uploadModal() {
   const exs = (await api("GET", "/api/exhibitions")).data || [];
+  // 不再默认「通用」——但允许用户主动选「通用」作为兜底
   const html = `<div class="cfg-row"><label>资料名称</label><input id="m-name" class="inp" placeholder="如：SIAL展位图2026.pdf"></div>
-    <div class="cfg-row"><label>所属展会 <span style="font-size:11px;color:#888;font-weight:normal">（可输入新名称或选择已有）</span></label>
-      <input id="m-ex" class="inp" list="m-ex-dl" placeholder="输入或选择展会名称，留空=通用">
+    <div class="cfg-row">
+      <label>所属展会 <span style="font-size:11px;color:#D35400;font-weight:normal">★ 必选（在下方选择或输入新展会）</span></label>
+      <input id="m-ex" class="inp" list="m-ex-dl" placeholder="输入新展会名称或选择已有">
       <datalist id="m-ex-dl">${exs.map(e => `<option value="${esc(e.name)}">`).join("")}</datalist>
+      <div class="muted" style="font-size:12px;margin-top:4px">输入新名称将自动创建该展会；选择已有则绑定到该展会</div>
     </div>
-    <div class="cfg-row"><label>选择文件（PDF/图片，演示以 base64 存储）</label><input id="m-file" type="file" class="inp"></div>
+    <div class="cfg-row"><label>选择文件（PDF/Word/图片）</label><input id="m-file" type="file" class="inp" accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.txt,.csv"></div>
     <button class="btn btn-primary btn-block" id="m-go">上传</button>`;
   openModal("上传展会资料", html);
   $("#m-go").onclick = async () => {
     const f = $("#m-file").files[0];
     if (!f) { toast("请选择文件"); return; }
-    const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
     const exName = ($("#m-ex").value || "").trim();
+    if (!exName) { toast("请输入或选择所属展会（不再默认『通用』）"); return; }
+    const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
     // 如果输入了展会名称，先查找或创建
     let exId = null;
-    if (exName) {
-      const matched = exs.find(e => e.name === exName);
-      if (matched) { exId = matched.id; }
-      else {
-        // 新展会：自动创建
-        const cr = await api("POST", "/api/exhibitions", { name: exName, city: "", date_text: "", note: "上传资料时创建" });
-        if (cr.ok) {
-          exs.push({ id: cr.data?.id || exs.length + 1, name: exName });
-          toast("已自动新建展会：" + exName);
-        }
+    const matched = exs.find(e => e.name === exName);
+    if (matched) { exId = matched.id; }
+    else {
+      const cr = await api("POST", "/api/exhibitions", { name: exName, city: "", date_text: "", note: "上传资料时创建" });
+      if (cr.ok) {
+        exId = cr.data?.id;
+        toast("已自动新建展会：" + exName);
+      } else {
+        toast("新建展会失败：" + (cr.data.error || "")); return;
       }
     }
-    await api("POST", "/api/materials", { name: $("#m-name").value || f.name, exhibition_id: exId, content_b64: b64 });
+    const r = await api("POST", "/api/materials", { name: $("#m-name").value || f.name, exhibition_id: exId, content_b64: b64 });
+    if (!r.ok) { toast("上传失败：" + (r.data.error || "")); return; }
     closeModal(); toast("资料已上传"); render();
+  };
+}
+
+function exName(id, exs) {
+  return (exs.find(e => e.id == id) || {}).name || "通用";
+}
+
+/* ================= 展会管理（独立二级页面） ================= */
+async function viewExposManage() {
+  const wrap = el("div");
+  wrap.appendChild(el("div", { class: "section-title" }, "📅 展会管理"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "在此维护展会信息：名称、城市、档期、备注。新建展会后，可在「AI 邮件模板中心」自动出现在目标展会下拉里。"));
+  const bar = el("div", { class: "action-bar" });
+  const btnNew = el("button", { class: "btn btn-primary" }, "➕ 新建展会");
+  btnNew.onclick = () => editExhibitionModal(null);
+  bar.appendChild(btnNew);
+  const btnRefresh = el("button", { class: "btn", style: "margin-left:8px" }, "🔄 刷新");
+  btnRefresh.onclick = () => render();
+  bar.appendChild(btnRefresh);
+  wrap.appendChild(bar);
+  // 列表
+  const r = await api("GET", "/api/exhibitions/summary");
+  const exs = r.data || [];
+  if (!exs.length) {
+    wrap.appendChild(el("div", { class: "empty" }, "暂无展会，点击「➕ 新建展会」开始"));
+    return wrap;
+  }
+  const t = el("table", { class: "tbl" });
+  t.appendChild(el("tr", {}, ["#", "展会名称", "城市", "档期", "备注", "资料数", "归属", "操作"].map(h => el("th", {}, h))));
+  exs.forEach((e, idx) => {
+    const tr = el("tr");
+    tr.appendChild(el("td", {}, String(idx + 1)));
+    tr.appendChild(el("td", {}, e.name || ""));
+    tr.appendChild(el("td", {}, e.city || "—"));
+    tr.appendChild(el("td", {}, e.date_text || "—"));
+    tr.appendChild(el("td", {}, e.note || "—"));
+    tr.appendChild(el("td", { style: "text-align:center;font-weight:bold;color:" + (e.material_count > 0 ? "#D35400" : "#999") },
+      String(e.material_count || 0)));
+    tr.appendChild(el("td", {}, e.user_id == 0 ? "🌐 系统" : "👤 我的"));
+    const td = el("td");
+    const e1 = el("button", { class: "btn btn-sm", style: "margin-right:6px" }, "✏️ 编辑");
+    e1.onclick = () => editExhibitionModal(e);
+    td.appendChild(e1);
+    if (e.user_id != 0) {
+      const d1 = el("button", { class: "btn btn-sm btn-danger" }, "删除");
+      d1.onclick = async () => {
+        const cnt = e.material_count || 0;
+        let msg = "确认删除展会「" + e.name + "」？";
+        if (cnt > 0) msg += "该展会下有 " + cnt + " 个资料，删除后这些资料的『所属展会』会变成『通用』。";
+        if (!confirm(msg)) return;
+        const r2 = await api("DELETE", "/api/exhibitions/" + e.id);
+        if (!r2.ok) { toast("删除失败：" + (r2.data.error || "")); return; }
+        toast("已删除"); render();
+      };
+      td.appendChild(d1);
+    } else {
+      td.appendChild(el("span", { class: "muted", style: "font-size:12px" }, "系统级不可删"));
+    }
+    tr.appendChild(td);
+    t.appendChild(tr);
+  });
+  wrap.appendChild(t);
+  return wrap;
+}
+
+async function editExhibitionModal(e) {
+  const isNew = !e;
+  const html = `<div class="cfg-row">
+    <label>展会名称 <span style="color:#D35400">★</span></label>
+    <input id="ex-name" class="inp" value="${esc(e?.name || '')}" placeholder="如：迪拜配料展 2027">
+  </div>
+  <div class="cfg-row">
+    <label>举办城市</label>
+    <input id="ex-city" class="inp" value="${esc(e?.city || '')}" placeholder="如：阿联酋迪拜">
+  </div>
+  <div class="cfg-row">
+    <label>展期（可写年份或具体日期）</label>
+    <input id="ex-date" class="inp" value="${esc(e?.date_text || '')}" placeholder="如：2027-02-15 ~ 02-19 或 2027 年 2 月">
+  </div>
+  <div class="cfg-row">
+    <label>备注 / 亮点</label>
+    <textarea id="ex-note" class="inp" rows="3" placeholder="如：聚焦食品配料与添加剂；上届 2000+ 参展商；中东最大食品行业盛会">${esc(e?.note || '')}</textarea>
+  </div>
+  <button class="btn btn-primary btn-block" id="ex-go">${isNew ? "新建" : "保存"}</button>`;
+  openModal(isNew ? "新建展会" : "编辑展会「" + (e.name || "") + "」", html);
+  $("#ex-go").onclick = async () => {
+    const name = ($("#ex-name").value || "").trim();
+    if (!name) { toast("展会名称必填"); return; }
+    const body = {
+      name,
+      city: ($("#ex-city").value || "").trim(),
+      date_text: ($("#ex-date").value || "").trim(),
+      note: ($("#ex-note").value || "").trim(),
+    };
+    let r;
+    if (isNew) r = await api("POST", "/api/exhibitions", body);
+    else r = await api("PATCH", "/api/exhibitions/" + e.id, body);
+    if (!r.ok) { toast("保存失败：" + (r.data.error || "")); return; }
+    closeModal(); toast(isNew ? "已新建：" + name : "已保存"); render();
   };
 }
 
@@ -1560,6 +1924,29 @@ function viewAdmin() {
   backupCard.appendChild(backupBar);
   wrap.appendChild(backupCard);
 
+  // —— 云端自动备份状态（部署稳定性：数据自动同步腾讯云 COS，重部署不丢）——
+  const autoCard = el("div", { class: "card" });
+  autoCard.appendChild(el("div", { class: "label" }, "🔄 云端自动备份状态"));
+  autoCard.appendChild(el("div", { class: "muted", style: "margin-bottom:10px;font-size:13px" },
+    "客户/资料/草稿/模板/发送日志每次变更都会自动同步到腾讯云 COS；重新部署后启动时自动从云端恢复，账号与导入的资料不会丢失。"));
+  const statusRow = el("div", { id: "bk-status", class: "muted" }, "正在检查…");
+  autoCard.appendChild(statusRow);
+  const autoBar = el("div", { class: "action-bar" });
+  const btnSync = el("button", { class: "btn" }, "⚡ 立即备份到云端");
+  btnSync.onclick = async () => {
+    btnSync.disabled = true; btnSync.textContent = "备份中…";
+    try {
+      const r = await api("POST", "/api/admin/backup/auto-trigger");
+      if (!r.ok) { toast("备份失败：" + (r.data.error || "")); }
+      else toast(r.data.db_synced ? "✅ 云端备份完成（DB + " + r.data.uploads_synced + " 个附件）" : "⚠️ 备份执行完成，但数据库同步失败，请检查 COS 配置");
+      loadBackupStatus();
+    } catch (e) { toast("备份异常：" + e.message); }
+    btnSync.disabled = false; btnSync.textContent = "⚡ 立即备份到云端";
+  };
+  autoBar.appendChild(btnSync);
+  autoCard.appendChild(autoBar);
+  wrap.appendChild(autoCard);
+
   const actionBar = el("div", { class: "action-bar" });
   const btnCreate = el("button", { class: "btn btn-primary" }, "➕ 新建成员 / 管理员");
   btnCreate.onclick = () => openCreateUser();
@@ -1574,6 +1961,34 @@ function viewAdmin() {
   table.innerHTML = `<thead><tr><th>ID</th><th>用户名</th><th>显示名称</th><th>角色</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="admin-users-body"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>`;
   card.appendChild(table);
   wrap.appendChild(card);
+
+  async function loadBackupStatus() {
+    const box = $("#bk-status");
+    if (!box) return;
+    try {
+      const r = await api("GET", "/api/admin/backup/status");
+      if (!r.ok) { box.innerHTML = '<span class="status-fail">状态获取失败：' + esc(r.data.error || "") + "</span>"; return; }
+      const d = r.data;
+      const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : b >= 1024 ? (b / 1024).toFixed(1) + " KB" : b + " B";
+      const totalRows = (d.tables || []).reduce((s, t) => s + (t.rows > 0 ? t.rows : 0), 0);
+      const cosTag = d.cos_enabled
+        ? '<span class="pill" style="background:#dcfce7;color:#166534">☁️ COS 自动备份已启用</span>'
+        : '<span class="pill pill-gray">COS 未配置（仅本地存储，重部署可能丢失）</span>';
+      const lastTxt = d.last_backup_at ? d.last_backup_at.replace("T", " ").slice(0, 19) : "尚未备份";
+      box.innerHTML = `
+        <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:8px">
+          ${cosTag}
+          <span class="muted" style="font-size:12px">存储桶：${esc(d.cos_bucket || "—")}${d.cos_enabled ? "" : "（需在系统设置配置 COS 后启用）"}</span>
+        </div>
+        <table class="tbl" style="font-size:13px">
+          <tbody>
+            <tr><td style="width:130px">数据库大小</td><td>${fmtSize(d.db_size_bytes)}</td><td style="width:140px">附件文件数</td><td>${d.upload_count} 个（${fmtSize(d.upload_bytes)}）</td></tr>
+            <tr><td>数据总记录数</td><td>${totalRows} 条</td><td>上次云端备份</td><td>${esc(lastTxt)}</td></tr>
+          </tbody>
+        </table>`;
+    } catch (e) { box.innerHTML = '<span class="status-fail">状态获取异常：' + esc(e.message) + "</span>"; }
+  }
+  loadBackupStatus();
 
   async function loadUsers() {
     const body = $("#admin-users-body");

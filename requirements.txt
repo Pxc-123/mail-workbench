@@ -1,4 +1,6 @@
-# 仅 openpyxl 与 COS SDK 为第三方依赖；其余均使用 Python 标准库。
+# 仅 openpyxl、python-docx、pypdf 与 COS SDK 为第三方依赖；其余均使用 Python 标准库。
 # 保留此文件以便 Render / Railway / CloudBase 等平台识别为 Python 项目。
 openpyxl==3.1.5
+python-docx==1.1.2
 cos-python-sdk-v5==1.9.30
+pypdf==5.0.0
