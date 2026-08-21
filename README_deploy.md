@@ -11,7 +11,7 @@
 deploy/
 ├── app.py            # 后端服务（同时托管前端 + 提供 API + 真发邮件）
 ├── frontend/         # 前端（已配置 backend 模式，同源真发）
-├── requirements.txt  # 无需第三方依赖（仅标准库）
+├── requirements.txt  # 依赖：openpyxl / python-docx / pypdf（资料文本提取）+ COS SDK（云端备份）
 ├── Procfile          # Heroku / Render 启动命令
 ├── render.yaml       # Render 一键部署配置
 ├── railway.json      # Railway 部署配置
@@ -89,6 +89,7 @@ server {
 - 每位用户的数据按账号隔离（`user_id`），互不可见。
 - 邮件通过你配置的 SMTP 由**服务器直接发送**，不经过任何第三方。
 - 数据库为单文件 `workbench.db`，备份只需复制该文件。
+- **云端自动备份（推荐）**：配置腾讯云 COS 环境变量（`COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET` / `COS_REGION`）后，每次数据变更自动同步到 COS；重新部署后启动时自动恢复，账号与导入资料不会丢失。管理员中心可查看备份状态并手动「立即备份到云端」。
 - 若要重置演示数据：删除 `workbench.db` 重启即可。
 
 ---
