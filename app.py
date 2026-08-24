@@ -1246,6 +1246,10 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     llm_used = False
     llm_error = None
     ai_on = bool(settings and str(settings.get("ai_enabled", "")) in ("1", "true", "True"))
+    if not ai_on:
+        llm_error = f"未启用(settings={type(settings).__name__}, ai_enabled={settings.get('ai_enabled') if settings else 'no-settings'})"
+    elif settings.get("ai_api_key") == "__skip__":
+        llm_error = "api_key被设置为__skip__"
     if ai_on and not settings.get("ai_api_key") == "__skip__":
         try:
             _angle_desc = ""
