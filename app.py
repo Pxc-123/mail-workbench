@@ -996,7 +996,89 @@ def _fetch_exhibition_highlights(ex):
     except Exception:
         return []
 
-def build_email(exhibition, customer_type, scene, tone, custom_input,  signature, uid=None, material_ids=None):
+# 多版本角度定义：同一展会/场景，从不同侧重点产出明显不同的邮件版本
+MULTI_ANGLES = [
+    {"key": "material", "label": "展会资料视角（基于您上传的附件要点）", "lead": "material",
+     "subject": "【资料速览】{ex} 展会亮点与展位方案，附核心资料"},
+    {"key": "news", "label": "行业趋势视角（结合最新网络资讯）", "lead": "news",
+     "subject": "【行业趋势】近期食品包装动态 × {ex} 出海价值"},
+    {"key": "combo", "label": "资料+趋势结合视角（附件与网络双结合）", "lead": "combo",
+     "subject": "【综合研判】展会资料 + 行业趋势，看 {ex} 出海机会"},
+    {"key": "scale", "label": "规模与买家资源视角", "lead": "scale",
+     "subject": "【买家资源】{ex} 汇聚全球采购商，邀您精准对接"},
+    {"key": "urgency", "label": "展位余量紧迫感视角", "lead": "urgency",
+     "subject": "【展位余量】{ex} 黄金档期仅剩少量，请尽快锁定"},
+]
+
+
+def _make_angle_lead(lead, ex, profile, material_summary, news_items):
+    """根据角度生成一段引导文字，使各版本侧重点明显不同。"""
+    if lead == "material":
+        if material_summary:
+            first = material_summary.split("\n\n")[0]
+            if len(first) > 160:
+                first = first[:160] + "…"
+            return "结合贵司上传的展会资料，%s 的几点核心看点：\n%s" % (ex, first)
+        return "%s已沉淀一批真实展会资料，欢迎索取完整版以了解买家画像与展位方案。" % ex
+    if lead == "news":
+        top = ""
+        if news_items:
+            for it in news_items[:3]:
+                t = (it.get("title") if isinstance(it, dict) else str(it)) or ""
+                if t:
+                    top = t
+                    break
+        if top:
+            return "近期行业动态显示：「%s」。在这一趋势下，%s 成为贵司把握出海机会的优质窗口。" % (top, ex)
+        return "近期食品包装机械出海需求持续升温，%s 正是触达海外精准买家的好时机。" % ex
+    if lead == "combo":
+        parts = ["我们结合本次展会资料与近期行业动态，为贵司梳理了 %s 的核心价值：" % ex]
+        if material_summary:
+            first = material_summary.split("\n\n")[0]
+            if len(first) > 120:
+                first = first[:120] + "…"
+            parts.append("· 展会资料要点：" + first)
+        top = ""
+        if news_items:
+            for it in news_items[:3]:
+                t = (it.get("title") if isinstance(it, dict) else str(it)) or ""
+                if t:
+                    top = t
+                    break
+        if top:
+            parts.append("· 行业动态：" + top)
+        return "\n".join(parts)
+    if lead == "scale":
+        city = profile.get("city") or ""
+        scale = profile.get("scale") or ""
+        return "%s（%s）%s，是区域内极具影响力的专业展会，汇聚大量海外采购商与经销商。" % (ex, city, scale)
+    if lead == "urgency":
+        return "目前 %s 优质展位余量已非常紧张，尤其贴合贵司品类的展区所剩无几。为锁定黄金档期与最佳曝光位，建议尽快确认意向。" % ex
+    return ""
+
+
+def build_email_multi(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None, n=5):
+    """一次产出 4-5 个不同角度的邮件版本（结构/侧重点明显不同）。
+    网络亮点与附件要点各抓取/提取一次，避免重复请求；每个角度强制不同开场白。"""
+    ex = exhibition or "本次海外食品展"
+    prefetched_news = _fetch_exhibition_highlights(ex)
+    prefetched_material = _summarize_materials(uid, material_ids or [])
+    angles = MULTI_ANGLES[:max(4, min(n, len(MULTI_ANGLES)))]
+    versions = []
+    for i, ang in enumerate(angles):
+        ang = dict(ang)
+        if i < len(OPENING_VARIANTS):
+            ang["opening"] = OPENING_VARIANTS[i]
+        subj, body = build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid,
+                                 material_ids=material_ids, angle=ang,
+                                 prefetched_news=prefetched_news, prefetched_material_summary=prefetched_material)
+        versions.append({"index": i + 1, "angle": ang.get("label"), "angle_key": ang.get("key"),
+                         "subject": subj, "body": body})
+    return versions
+
+
+def build_email(exhibition, customer_type, scene, tone, custom_input,  signature, uid=None, material_ids=None,
+                angle=None, prefetched_news=None, prefetched_material_summary=None):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
@@ -1025,7 +1107,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     profile = get_exhibition_profile(ex, uid)
     # 核心亮点升级：内置展会资料 + 上传附件提取 + 实时网络检索（带兜底，网络失败不影响生成）
     hl_material = _extract_highlights_from_materials(uid, material_ids)
-    hl_news = _fetch_exhibition_highlights(ex)
+    hl_news = prefetched_news if prefetched_news is not None else _fetch_exhibition_highlights(ex)
     merged_hl = []
     seen = set()
     for h in hl_material + hl_news + list(profile.get("highlights") or []):
@@ -1039,13 +1121,22 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     ex_scale = profile.get("scale", "")
     ex_highlights = profile.get("highlights", [])
     hl2 = "、".join(ex_highlights[:2]) if ex_highlights else ""
-    # 随机选取开场白和结尾（有展会专属开场白时优先用，内容更贴合）
-    opening = random.choice(profile["openings"]) if profile.get("openings") else random.choice(OPENING_VARIANTS)
+    # 开场白：多版本模式下由角度固定指定（确保每个版本不同）；单版本模式随机选取
+    if angle and angle.get("opening"):
+        opening = angle["opening"]
+    else:
+        opening = random.choice(profile["openings"]) if profile.get("openings") else random.choice(OPENING_VARIANTS)
     closing = random.choice(CLOSING_VARIANTS)
     ex_info_para = _build_ex_info(ex, profile)
     # 用户选定的资料内容：让邮件真正反映最新资料（PDF/Word 全文摘要）
-    material_summary = _summarize_materials(uid, material_ids or [])
+    material_summary = prefetched_material_summary if prefetched_material_summary is not None else _summarize_materials(uid, material_ids or [])
     mat_block = f"【资料要点】\n{material_summary}\n\n" if material_summary else ""
+    # 角度引导段：使不同版本明显不同（基于角度/网络/附件侧重点）
+    angle_lead = ""
+    if angle and angle.get("lead"):
+        angle_lead = _make_angle_lead(angle["lead"], ex, profile,
+                                      prefetched_material_summary if prefetched_material_summary is not None else _summarize_materials(uid, material_ids or []),
+                                      prefetched_news if prefetched_news is not None else _fetch_exhibition_highlights(ex))
 
     # 称呼占位（发送时按客户替换）
     salutation = "尊敬的 {联系人姓名}（{客户名称}）："
@@ -1053,6 +1144,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     scene_body = {
         "1": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"我是「{ex}」中国区招展团队的成员。本次致信是希望向贵司介绍这一重要的海外拓展机会。\n\n"
             f"{ex_info_para}\n\n"
             f"结合{intro}，我们相信贵司的产品与本次展会的买家画像高度契合。\n\n"
@@ -1061,6 +1153,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         ),
         "2": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"持续关注贵司在海外市场的进展。近期食品行业有几条值得留意的动态，特别与{intro}相关：\n\n"
             f"{ ('【行业资讯】\n' + news) if news else '【行业资讯】近期多国进口食品需求回暖，买家采购意愿明显增强；RCEP 框架下亚洲区内贸易成本持续下降。' }\n\n"
             f"在此背景下，{ex}将是贵司触达精准海外买家的优质窗口——{ex_scale or '汇聚全球优质采购商'}。如需，我可补充本次展会的买家结构与往届成交数据。\n\n"
@@ -1068,6 +1161,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         ),
         "3": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"关于{ex}，需向您同步一个重要进展：目前优质展位余量已非常紧张，尤其贴合{intro}的展区所剩无几。\n\n"
             f"{ ('您此前关注的重点如下：\n' + news + '\n') if news else '' }"
             f"为保障贵司的参展位置与最佳曝光，建议尽快确认展位意向，避免错失黄金档期。我可为您预留 48 小时优先选位。\n\n"
@@ -1075,6 +1169,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         ),
         "4": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"就贵司关注出海拓展的成本问题，特向您同步{ex}相关的参展补贴政策：多地商务主管部门对中小企业海外参展给予"
             f"展位费补贴（通常 50%~70% 不等），可显著降低出海门槛。\n\n"
             f"{ ('政策要点：\n' + news + '\n') if news else '' }"
@@ -1084,6 +1179,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         # ---- 报价 / 客户跟进 / 感谢 ----
         "5": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"关于贵司关注的{ex}，我们已为贵司初步测算了参展投入与回报，现将报价方案同步如下：\n\n"
             f"【展位方案】\n"
             f"· 标准展位（9㎡）：含基础搭建、楣板、照明、洽谈桌 —— 适合首次试水\n"
@@ -1096,6 +1192,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         ),
         "6": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"距我们上次沟通已有一段时间，特来跟进贵司关于{ex}的参展意向，也想确认接下来的配合节奏。\n\n"
             f"想和您对齐三点：\n"
             f"1）参展预算与档期是否已排定？\n"
@@ -1107,6 +1204,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         ),
         "7": (
             f"{opening}\n\n"
+            f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"感谢贵司对{ex}的关注与支持！无论最终是否成行，都十分珍视与贵司的交流。\n\n"
             f"{ ('【本次展会价值】' + hl2 + '\n\n') if hl2 else '' }"
             f"如贵司后续有出海拓展、买家对接或展会相关的任何需求，我们随时提供协助——包括展后买家名单、行业报告与下一届档期预告。\n\n"
@@ -1128,16 +1226,20 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
 
     body = f"{salutation}\n\n{scene_body}{mat_block}{tone_tail}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
-    subject_map = {
-        "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
-        "2": f"[{ctype}行业资讯] 附 {ex} 出海机会",
-        "3": f"【展位余量提醒】{ex} 优质展区所剩无几",
-        "4": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
-        "5": f"【参展报价方案】{ex} 展位费用与投入回报",
-        "6": f"【跟进】{ex} 参展意向确认，请查收",
-        "7": f"【感谢】感谢关注 {ex}，后续资源持续开放",
-    }
-    subject = subject_map[scene_key]
+    # 主题：多版本模式下优先使用角度专属主题（含展会名），否则用场景默认主题
+    if angle and angle.get("subject"):
+        subject = angle["subject"].replace("{ex}", ex)
+    else:
+        subject_map = {
+            "1": f"邀您共赴 {ex}｜拓展海外买家渠道",
+            "2": f"[{ctype}行业资讯] 附 {ex} 出海机会",
+            "3": f"【展位余量提醒】{ex} 优质展区所剩无几",
+            "4": f"【补贴政策】{ex} 参展补贴可显著降低出海成本",
+            "5": f"【参展报价方案】{ex} 展位费用与投入回报",
+            "6": f"【跟进】{ex} 参展意向确认，请查收",
+            "7": f"【感谢】感谢关注 {ex}，后续资源持续开放",
+        }
+        subject = subject_map[scene_key]
     return subject, body
 
 # ---------------------------- 邮件发送 ----------------------------
@@ -1835,6 +1937,16 @@ class Handler(BaseHTTPRequestHandler):
                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
                                             material_ids=d.get("material_ids"))
                 return json_resp({"subject": subject, "body": body})
+            if path == "/api/ai/generate-multi":
+                n = d.get("n") or 5
+                try:
+                    n = max(4, min(5, int(n)))
+                except Exception:
+                    n = 5
+                versions = build_email_multi(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
+                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
+                                             material_ids=d.get("material_ids"), n=n)
+                return json_resp({"versions": versions})
             if path == "/api/ai/translate":
                 return self.translate_email(d)
             if path == "/api/exhibitions":

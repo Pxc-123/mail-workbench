@@ -809,28 +809,48 @@ function viewGen() {
     newsBtn.disabled = false; newsBtn.textContent = "🔍 获取最新行业资讯（真实新闻）";
   };
   left.appendChild(newsBtn);
-  const gen = el("button", { class: "btn btn-primary btn-block", style: "margin-top:14px" }, "⚡ AI 一键生成邮件");
+  // 生成按钮区：单版本 + 多版本（4-5个不同角度）
+  const genWrap = el("div", { style: "margin-top:14px;display:flex;flex-direction:column;gap:8px" });
+  const gen = el("button", { class: "btn btn-primary btn-block" }, "⚡ AI 一键生成邮件");
   gen.onclick = async () => {
-    gen.textContent = "生成中…"; gen.disabled = true;
-    const r = await api("POST", "/api/ai/generate", {
-      exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
-      custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
-      material_ids: STATE.attachments.map(a => a.id)
-    });
-    gen.textContent = "⚡ AI 一键生成邮件"; gen.disabled = false;
-    if (!r.ok) { toast("生成失败"); return; }
-    STATE.gen = { exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, custom: custom.value, subject: r.data.subject, body: r.data.body };
-    STATE.origMail = { subject: r.data.subject, body: r.data.body };
-    STATE.lang = "zh";
-    updateLangButtons();
-    $("#pv-subject").value = r.data.subject; $("#pv-body").value = r.data.body;
-    toast("已生成，可在右侧修改");
+    gen.disabled = true; gen.textContent = "生成中…";
+    try {
+      const r = await api("POST", "/api/ai/generate", {
+        exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
+        custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
+        material_ids: STATE.attachments.map(a => a.id)
+      });
+      if (!r.ok) { toast("生成失败"); return; }
+      fillGenerated(r.data.subject, r.data.body);
+    } finally {
+      gen.disabled = false; gen.textContent = "⚡ AI 一键生成邮件";
+    }
   };
-  left.appendChild(gen);
+  const genMulti = el("button", { class: "btn", style: "background:#7c3aed;color:#fff;font-weight:600" }, "🎲 生成 4-5 个不同版本（多视角）");
+  genMulti.onclick = async () => {
+    genMulti.disabled = true; genMulti.textContent = "🎲 正在生成 4-5 个不同版本…";
+    try {
+      const r = await api("POST", "/api/ai/generate-multi", {
+        exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
+        custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
+        material_ids: STATE.attachments.map(a => a.id), n: 5
+      });
+      if (!r.ok) { toast("生成失败"); return; }
+      renderMultiVersions(r.data.versions || []);
+    } finally {
+      genMulti.disabled = false; genMulti.textContent = "🎲 生成 4-5 个不同版本（多视角）";
+    }
+  };
+  genWrap.appendChild(gen);
+  genWrap.appendChild(genMulti);
+  left.appendChild(genWrap);
   split.appendChild(left);
 
   // 右：预览编辑
   const right = el("div", { class: "preview-box" });
+  // 多版本切换标签容器（默认隐藏）
+  const verTabs = el("div", { id: "ver-tabs", style: "display:none;margin-bottom:12px" });
+  right.appendChild(verTabs);
   // 语言切换按钮
   const langBar = el("div", { style: "display:flex;gap:6px;margin-bottom:10px;align-items:center" });
   const langOpts = [
@@ -898,6 +918,13 @@ function viewGen() {
     setTimeout(doVarReplace, 200);
     if (varSel.options.length > 1) varSel.selectedIndex = 1;
   };
+  // 多版本生成后也自动触发变量替换预览
+  const origMultiClick = genMulti.onclick;
+  genMulti.onclick = async (...a) => {
+    await origMultiClick(...a);
+    setTimeout(doVarReplace, 200);
+    if (varSel.options.length > 1) varSel.selectedIndex = 1;
+  };
   right.appendChild(varPreview);
   right.appendChild(el("div", { class: "var-hint" }, "💡 变量说明：{客户名称} {联系人姓名} {销售姓名} 等 — 批量发送时按每位客户自动替换为真实信息，每封邮件都不同。"));
   const bar = el("div", { class: "action-bar" });
@@ -922,6 +949,89 @@ function viewGen() {
 
   wrap.appendChild(split);
   return wrap;
+}
+
+/** 单版本生成后填充主题/正文并记录状态 */
+function fillGenerated(subject, body) {
+  STATE.gen = Object.assign(STATE.gen || {}, {
+    exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
+    customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
+    scene: $("#cfg-sc") ? $("#cfg-sc").value : (STATE.gen && STATE.gen.scene),
+    tone: $("#cfg-tn") ? $("#cfg-tn").value : (STATE.gen && STATE.gen.tone),
+    custom: $("#cfg-custom") ? $("#cfg-custom").value : (STATE.gen && STATE.gen.custom),
+    subject: subject, body: body
+  });
+  STATE.origMail = { subject: subject, body: body };
+  STATE.lang = "zh";
+  updateLangButtons();
+  $("#pv-subject").value = subject; $("#pv-body").value = body;
+  // 隐藏多版本标签
+  const vt = document.getElementById("ver-tabs");
+  if (vt) vt.style.display = "none";
+  toast("已生成，可在右侧修改");
+}
+
+/** 多版本生成后渲染版本切换标签，点击切换主题/正文 */
+function renderMultiVersions(versions) {
+  const vt = document.getElementById("ver-tabs");
+  if (!vt) return;
+  if (!versions.length) { toast("未生成任何版本"); return; }
+  vt.innerHTML = "";
+  vt.style.display = "block";
+  vt.appendChild(el("div", { class: "label", style: "margin-bottom:8px" }, "🎲 已生成 " + versions.length + " 个不同视角版本，点击切换（保存/发送将使用当前选中版本）"));
+  const tabBar = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" });
+  versions.forEach((v, i) => {
+    const tab = el("button", {
+      class: "btn btn-sm ver-tab" + (i === 0 ? " ver-tab-active" : ""),
+      "data-idx": i,
+      style: "font-size:12px;padding:6px 12px;cursor:pointer;" + (i === 0 ? "background:#7c3aed;color:#fff;border-color:#7c3aed" : "background:#fff;color:#374151;border:1px solid #d1d5db")
+    }, "V" + (i + 1) + " · " + (v.angle || "角度" + (i + 1)));
+    tab.onclick = () => {
+      // 高亮当前标签
+      var allTabs = vt.querySelectorAll(".ver-tab");
+      for (var t = 0; t < allTabs.length; t++) {
+        allTabs[t].style.background = "#fff";
+        allTabs[t].style.color = "#374151";
+        allTabs[t].style.border = "1px solid #d1d5db";
+        allTabs[t].classList.remove("ver-tab-active");
+      }
+      tab.style.background = "#7c3aed";
+      tab.style.color = "#fff";
+      tab.style.border = "1px solid #7c3aed";
+      tab.classList.add("ver-tab-active");
+      // 填充该版本到预览框
+      STATE.gen = Object.assign(STATE.gen || {}, {
+        exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
+        customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
+        scene: $("#cfg-sc") ? $("#cfg-sc").value : (STATE.gen && STATE.gen.scene),
+        tone: $("#cfg-tn") ? $("#cfg-tn").value : (STATE.gen && STATE.gen.tone),
+        custom: $("#cfg-custom") ? $("#cfg-custom").value : (STATE.gen && STATE.gen.custom),
+        subject: v.subject, body: v.body
+      });
+      STATE.origMail = { subject: v.subject, body: v.body };
+      STATE.lang = "zh";
+      updateLangButtons();
+      $("#pv-subject").value = v.subject; $("#pv-body").value = v.body;
+      toast("已切换到 V" + (i + 1));
+    };
+    tabBar.appendChild(tab);
+  });
+  vt.appendChild(tabBar);
+  // 默认选中第 1 个版本
+  var first = versions[0];
+  STATE.gen = Object.assign(STATE.gen || {}, {
+    exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
+    customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
+    scene: $("#cfg-sc") ? $("#cfg-sc").value : (STATE.gen && STATE.gen.scene),
+    tone: $("#cfg-tn") ? $("#cfg-tn").value : (STATE.gen && STATE.gen.tone),
+    custom: $("#cfg-custom") ? $("#cfg-custom").value : (STATE.gen && STATE.gen.custom),
+    subject: first.subject, body: first.body
+  });
+  STATE.origMail = { subject: first.subject, body: first.body };
+  STATE.lang = "zh";
+  updateLangButtons();
+  $("#pv-subject").value = first.subject; $("#pv-body").value = first.body;
+  toast("已生成 " + versions.length + " 个版本，默认显示 V1");
 }
 async function saveTemplateModal() {
   const subj = $("#pv-subject").value, body = $("#pv-body").value;
