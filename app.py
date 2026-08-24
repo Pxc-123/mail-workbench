@@ -2228,6 +2228,10 @@ class Handler(BaseHTTPRequestHandler):
                      s.get("ai_enabled", ""), s.get("ai_provider", "deepseek"),
                      s.get("ai_base_url", ""), s.get("ai_api_key", ""), s.get("ai_model", "")))
                 conn.commit()
+                # 关键配置（AI 大模型）保存后立即同步上传到 COS，避免容器重启后丢配置
+                if s.get("ai_enabled") and s.get("ai_api_key"):
+                    try: cos_upload_db()
+                    except Exception as _e: print("[COS] settings保存后立即同步失败：", _e, flush=True)
                 return json_resp({"ok": True})
             if path == "/api/me/change-password":
                 old = d.get("old_password") or ""
