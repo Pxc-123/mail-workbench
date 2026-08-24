@@ -1275,13 +1275,16 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                 f"不要使用 markdown 标题，用纯文本段落。控制在 350 字以内。称呼用「尊敬的 {{联系人姓名}}（{{客户名称}}）：」占位。"
             )
             _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
+            print(f"[AI-LLM] 返回长度={len(_llm_body) if _llm_body else 0}, 前50字={(_llm_body or '')[:50]}", flush=True)
             if _llm_body and len(_llm_body) > 30:
                 # 用 LLM 正文替换模板正文，但保留资料要点块与三要素块（确保信息完整）
                 scene_body = _llm_body
                 llm_used = True
         except Exception as _e:
             # 调用失败：静默回退到模板生成，不影响出信
-            print("[AI-LLM] 大模型调用失败，回退模板：", _e)
+            import traceback
+            print(f"[AI-LLM] 大模型调用失败: {type(_e).__name__}: {_e}", flush=True)
+            print(traceback.format_exc(), flush=True)
 
     body = f"{salutation}\n\n{scene_body}{mat_block}{ex_facts_block}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
