@@ -809,26 +809,11 @@ function viewGen() {
     newsBtn.disabled = false; newsBtn.textContent = "🔍 获取最新行业资讯（真实新闻）";
   };
   left.appendChild(newsBtn);
-  // 生成按钮区：单版本 + 多版本（4-5个不同角度）
+  // 生成按钮区：AI 一键生成（自动产出 4-5 个有差异的版本）
   const genWrap = el("div", { style: "margin-top:14px;display:flex;flex-direction:column;gap:8px" });
   const gen = el("button", { class: "btn btn-primary btn-block" }, "⚡ AI 一键生成邮件");
   gen.onclick = async () => {
-    gen.disabled = true; gen.textContent = "生成中…";
-    try {
-      const r = await api("POST", "/api/ai/generate", {
-        exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
-        custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
-        material_ids: STATE.attachments.map(a => a.id)
-      });
-      if (!r.ok) { toast("生成失败"); return; }
-      fillGenerated(r.data.subject, r.data.body);
-    } finally {
-      gen.disabled = false; gen.textContent = "⚡ AI 一键生成邮件";
-    }
-  };
-  const genMulti = el("button", { class: "btn", style: "background:#7c3aed;color:#fff;font-weight:600" }, "🎲 生成 4-5 个不同版本（多视角）");
-  genMulti.onclick = async () => {
-    genMulti.disabled = true; genMulti.textContent = "🎲 正在生成 4-5 个不同版本…";
+    gen.disabled = true; gen.textContent = "⚡ 正在生成多个版本…";
     try {
       const r = await api("POST", "/api/ai/generate-multi", {
         exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
@@ -836,21 +821,20 @@ function viewGen() {
         material_ids: STATE.attachments.map(a => a.id), n: 5
       });
       if (!r.ok) { toast("生成失败"); return; }
-      renderMultiVersions(r.data.versions || []);
+      renderVersionCards(r.data.versions || []);
     } finally {
-      genMulti.disabled = false; genMulti.textContent = "🎲 生成 4-5 个不同版本（多视角）";
+      gen.disabled = false; gen.textContent = "⚡ AI 一键生成邮件";
     }
   };
   genWrap.appendChild(gen);
-  genWrap.appendChild(genMulti);
   left.appendChild(genWrap);
   split.appendChild(left);
 
   // 右：预览编辑
   const right = el("div", { class: "preview-box" });
-  // 多版本切换标签容器（默认隐藏）
-  const verTabs = el("div", { id: "ver-tabs", style: "display:none;margin-bottom:12px" });
-  right.appendChild(verTabs);
+  // 多版本卡片列表容器（默认隐藏，生成后显示）
+  const verCards = el("div", { id: "ver-cards", style: "display:none;margin-bottom:12px" });
+  right.appendChild(verCards);
   // 语言切换按钮
   const langBar = el("div", { style: "display:flex;gap:6px;margin-bottom:10px;align-items:center" });
   const langOpts = [
@@ -919,9 +903,9 @@ function viewGen() {
     if (varSel.options.length > 1) varSel.selectedIndex = 1;
   };
   // 多版本生成后也自动触发变量替换预览
-  const origMultiClick = genMulti.onclick;
-  genMulti.onclick = async (...a) => {
-    await origMultiClick(...a);
+  const origGenClick = gen.onclick;
+  gen.onclick = async (...a) => {
+    await origGenClick(...a);
     setTimeout(doVarReplace, 200);
     if (varSel.options.length > 1) varSel.selectedIndex = 1;
   };
@@ -971,35 +955,39 @@ function fillGenerated(subject, body) {
   toast("已生成，可在右侧修改");
 }
 
-/** 多版本生成后渲染版本切换标签，点击切换主题/正文 */
-function renderMultiVersions(versions) {
-  const vt = document.getElementById("ver-tabs");
-  if (!vt) return;
+/** 多版本生成后渲染为卡片列表（每张卡片显示主题+正文摘要，点击选中并填入预览区） */
+function renderVersionCards(versions) {
+  const vc = document.getElementById("ver-cards");
+  if (!vc) return;
   if (!versions.length) { toast("未生成任何版本"); return; }
-  vt.innerHTML = "";
-  vt.style.display = "block";
-  vt.appendChild(el("div", { class: "label", style: "margin-bottom:8px" }, "🎲 已生成 " + versions.length + " 个不同视角版本，点击切换（保存/发送将使用当前选中版本）"));
-  const tabBar = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" });
+  vc.innerHTML = "";
+  vc.style.display = "block";
+  vc.appendChild(el("div", { class: "label", style: "margin-bottom:8px" }, "📋 已生成 " + versions.length + " 个不同版本，点击任意版本预览（保存/发送将使用当前选中版）"));
+  const list = el("div", { style: "display:flex;flex-direction:column;gap:8px" });
   versions.forEach((v, i) => {
-    const tab = el("button", {
-      class: "btn btn-sm ver-tab" + (i === 0 ? " ver-tab-active" : ""),
+    var snippet = (v.body || "").replace(/\n/g, " ").trim().slice(0, 100) + ((v.body || "").length > 100 ? "…" : "");
+    var card = el("div", {
+      class: "ver-card",
       "data-idx": i,
-      style: "font-size:12px;padding:6px 12px;cursor:pointer;" + (i === 0 ? "background:#7c3aed;color:#fff;border-color:#7c3aed" : "background:#fff;color:#374151;border:1px solid #d1d5db")
-    }, "V" + (i + 1) + " · " + (v.angle || "角度" + (i + 1)));
-    tab.onclick = () => {
-      // 高亮当前标签
-      var allTabs = vt.querySelectorAll(".ver-tab");
-      for (var t = 0; t < allTabs.length; t++) {
-        allTabs[t].style.background = "#fff";
-        allTabs[t].style.color = "#374151";
-        allTabs[t].style.border = "1px solid #d1d5db";
-        allTabs[t].classList.remove("ver-tab-active");
+      style: "background:#fff;border:2px solid " + (i === 0 ? "#7c3aed" : "#e5e7eb") + ";border-radius:10px;padding:12px;cursor:pointer;transition:all .2s"
+    }, [
+      el("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px" }, [
+        el("span", { style: "background:" + (i === 0 ? "#7c3aed" : "#f3f4f6") + ";color:" + (i === 0 ? "#fff" : "#6b7280") + ";font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px" }, "V" + (i + 1)),
+        el("span", { style: "font-size:12px;font-weight:600;color:#7c3aed;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, v.angle || ("版本 " + (i + 1)))
+      ]),
+      el("div", { style: "font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, v.subject || "（无主题）"),
+      el("div", { style: "font-size:12px;color:#6b7280;line-height:1.5" }, snippet)
+    ]);
+    card.onclick = () => {
+      var allCards = vc.querySelectorAll(".ver-card");
+      for (var c = 0; c < allCards.length; c++) {
+        allCards[c].style.border = "2px solid #e5e7eb";
+        allCards[c].querySelector("span:first-child").style.background = "#f3f4f6";
+        allCards[c].querySelector("span:first-child").style.color = "#6b7280";
       }
-      tab.style.background = "#7c3aed";
-      tab.style.color = "#fff";
-      tab.style.border = "1px solid #7c3aed";
-      tab.classList.add("ver-tab-active");
-      // 填充该版本到预览框
+      card.style.border = "2px solid #7c3aed";
+      card.querySelector("span:first-child").style.background = "#7c3aed";
+      card.querySelector("span:first-child").style.color = "#fff";
       STATE.gen = Object.assign(STATE.gen || {}, {
         exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
         customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
@@ -1012,11 +1000,11 @@ function renderMultiVersions(versions) {
       STATE.lang = "zh";
       updateLangButtons();
       $("#pv-subject").value = v.subject; $("#pv-body").value = v.body;
-      toast("已切换到 V" + (i + 1));
+      toast("已选中 V" + (i + 1) + " · " + (v.angle || ""));
     };
-    tabBar.appendChild(tab);
+    list.appendChild(card);
   });
-  vt.appendChild(tabBar);
+  vc.appendChild(list);
   // 默认选中第 1 个版本
   var first = versions[0];
   STATE.gen = Object.assign(STATE.gen || {}, {
@@ -1031,7 +1019,7 @@ function renderMultiVersions(versions) {
   STATE.lang = "zh";
   updateLangButtons();
   $("#pv-subject").value = first.subject; $("#pv-body").value = first.body;
-  toast("已生成 " + versions.length + " 个版本，默认显示 V1");
+  toast("已生成 " + versions.length + " 个有差异的版本");
 }
 async function saveTemplateModal() {
   const subj = $("#pv-subject").value, body = $("#pv-body").value;
