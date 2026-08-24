@@ -166,6 +166,13 @@ function bindNav() {
     render();
   });
   $("#logout-btn").onclick = logout;
+  // 顶栏用户名 → 点击打开个人设置（修改显示名称/密码）
+  const curUser = $("#cur-user");
+  if (curUser) {
+    curUser.style.cursor = "pointer";
+    curUser.title = "点击修改个人设置";
+    curUser.onclick = () => openChangeMyPassword();
+  }
 }
 function defaultSub(v) { return { home: "todos", ai: "gen", cust: "list", expo: "mat", set: "base" }[v] || ""; }
 
@@ -440,7 +447,7 @@ async function refreshBell() {
 /* ================= AI 邮件模板中心 ================= */
 let EXHIBITIONS = [];
 let CUST_TYPES_CACHE = []; // 动态从 /api/tags 加载
-async function getExhibitions() { if (!EXHIBITIONS.length) { const r = await api("GET", "/api/exhibitions"); EXHIBITIONS = r.data || []; } return EXHIBITIONS; }
+async function getExhibitions(force) { if (force || !EXHIBITIONS.length) { const r = await api("GET", "/api/exhibitions"); EXHIBITIONS = r.data || []; } return EXHIBITIONS; }
 async function getCustTypes() {
   if (!CUST_TYPES_CACHE.length) {
     const r = await api("GET", "/api/tags");
@@ -664,13 +671,18 @@ function viewGen() {
   // 左：配置
   const left = el("div", { class: "card" });
   left.appendChild(el("div", { class: "label" }, "1. 选择目标展会"));
-  const exSel = el("select", { class: "inp", id: "cfg-ex" });
-  getExhibitions().then(exs => {
-    exs.forEach(e => exSel.appendChild(el("option", { value: e.name }, e.name)));
-    if (STATE.gen.exhibition && [...exSel.options].some(o => o.value === STATE.gen.exhibition)) exSel.value = STATE.gen.exhibition;
-    else STATE.gen.exhibition = exSel.value;
+  // 可搜索的展会选择（input + datalist），支持打字快速筛选
+  const exDl = el("datalist", { id: "dl-ex" });
+  const exInput = el("input", { class: "inp", id: "cfg-ex", list: "dl-ex", placeholder: "输入或选择目标展会…", autocomplete: "off" });
+  left.appendChild(exDl); left.appendChild(exInput);
+  // 每次进入 AI 生成页都强制刷新展会列表（确保新建的展会立即出现）
+  getExhibitions(true).then(exs => {
+    exDl.innerHTML = "";
+    exs.forEach(e => exDl.appendChild(el("option", { value: e.name })));
+    // 如果当前值不在列表中但用户之前选过，保留；否则默认第一个
+    if (STATE.gen.exhibition && exs.some(e => e.name === STATE.gen.exhibition)) exInput.value = STATE.gen.exhibition;
+    else if (exs.length && !exInput.value) { exInput.value = exs[0].name; STATE.gen.exhibition = exs[0].name; }
   });
-  left.appendChild(exSel);
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
   const ctSel = el("select", { class: "inp", id: "cfg-ct" }, [el("option", { value: "" }, "加载中…")]);
   left.appendChild(ctSel);
@@ -1641,7 +1653,7 @@ function exName(id, exs) {
 }
 
 /* ================= 展会管理（独立二级页面） ================= */
-async function viewExposManage() {
+function viewExposManage() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "📅 展会管理"));
   wrap.appendChild(el("div", { class: "section-sub" }, "在此维护展会信息：名称、城市、档期、备注。新建展会后，可在「AI 邮件模板中心」自动出现在目标展会下拉里。"));
@@ -1653,48 +1665,64 @@ async function viewExposManage() {
   btnRefresh.onclick = () => render();
   bar.appendChild(btnRefresh);
   wrap.appendChild(bar);
-  // 列表
-  const r = await api("GET", "/api/exhibitions/summary");
-  const exs = r.data || [];
-  if (!exs.length) {
-    wrap.appendChild(el("div", { class: "empty" }, "暂无展会，点击「➕ 新建展会」开始"));
-    return wrap;
-  }
-  const t = el("table", { class: "tbl" });
-  t.appendChild(el("tr", {}, ["#", "展会名称", "城市", "档期", "备注", "资料数", "归属", "操作"].map(h => el("th", {}, h))));
-  exs.forEach((e, idx) => {
-    const tr = el("tr");
-    tr.appendChild(el("td", {}, String(idx + 1)));
-    tr.appendChild(el("td", {}, e.name || ""));
-    tr.appendChild(el("td", {}, e.city || "—"));
-    tr.appendChild(el("td", {}, e.date_text || "—"));
-    tr.appendChild(el("td", {}, e.note || "—"));
-    tr.appendChild(el("td", { style: "text-align:center;font-weight:bold;color:" + (e.material_count > 0 ? "#D35400" : "#999") },
-      String(e.material_count || 0)));
-    tr.appendChild(el("td", {}, e.user_id == 0 ? "🌐 系统" : "👤 我的"));
-    const td = el("td");
-    const e1 = el("button", { class: "btn btn-sm", style: "margin-right:6px" }, "✏️ 编辑");
-    e1.onclick = () => editExhibitionModal(e);
-    td.appendChild(e1);
-    if (e.user_id != 0) {
-      const d1 = el("button", { class: "btn btn-sm btn-danger" }, "删除");
-      d1.onclick = async () => {
-        const cnt = e.material_count || 0;
-        let msg = "确认删除展会「" + e.name + "」？";
-        if (cnt > 0) msg += "该展会下有 " + cnt + " 个资料，删除后这些资料的『所属展会』会变成『通用』。";
-        if (!confirm(msg)) return;
-        const r2 = await api("DELETE", "/api/exhibitions/" + e.id);
-        if (!r2.ok) { toast("删除失败：" + (r2.data.error || "")); return; }
-        toast("已删除"); render();
-      };
-      td.appendChild(d1);
-    } else {
-      td.appendChild(el("span", { class: "muted", style: "font-size:12px" }, "系统级不可删"));
+  // 异步加载列表（同步外壳 + 异步填充，避免 Promise 被 appendChild 导致白屏）
+  const listArea = el("div");
+  wrap.appendChild(listArea);
+  (async () => {
+    try {
+      const r = await api("GET", "/api/exhibitions/summary");
+      const exs = r.data || [];
+      if (!exs.length) {
+        listArea.innerHTML = `<div style="text-align:center;padding:40px 20px;color:#94a3b8;font-size:14px">
+          <div style="font-size:36px;margin-bottom:10px">📭</div>
+          暂无展会，点击上方「➕ 新建展会」开始<br>
+          <span style="font-size:12px;color:#b0b8c4">提示：新建的展会会立即出现在「AI 邮件模板中心」的目标展会下拉中</span>
+        </div>`;
+        return;
+      }
+      const t = el("table", { class: "tbl" });
+      t.appendChild(el("tr", {}, ["#", "展会名称", "城市", "档期", "备注", "资料数", "归属", "操作"].map(h => el("th", {}, h))));
+      exs.forEach((e, idx) => {
+        const tr = el("tr");
+        tr.appendChild(el("td", {}, String(idx + 1)));
+        tr.appendChild(el("td", {}, e.name || ""));
+        tr.appendChild(el("td", {}, e.city || "—"));
+        tr.appendChild(el("td", {}, e.date_text || "—"));
+        tr.appendChild(el("td", {}, e.note || "—"));
+        tr.appendChild(el("td", { style: "text-align:center;font-weight:bold;color:" + (e.material_count > 0 ? "#D35400" : "#999") },
+          String(e.material_count || 0)));
+        tr.appendChild(el("td", {}, e.user_id == 0 ? "🌐 系统" : "👤 我的"));
+        const td = el("td");
+        const e1 = el("button", { class: "btn btn-sm", style: "margin-right:6px" }, "✏️ 编辑");
+        e1.onclick = () => editExhibitionModal(e);
+        td.appendChild(e1);
+        if (e.user_id != 0) {
+          const d1 = el("button", { class: "btn btn-sm btn-danger" }, "删除");
+          d1.onclick = async () => {
+            const cnt = e.material_count || 0;
+            let msg = "确认删除展会「" + e.name + "」？";
+            if (cnt > 0) msg += "该展会下有 " + cnt + " 个资料，删除后这些资料的『所属展会』会变成『通用』。";
+            if (!confirm(msg)) return;
+            const r2 = await api("DELETE", "/api/exhibitions/" + e.id);
+            if (!r2.ok) { toast("删除失败：" + (r2.data.error || "")); return; }
+            toast("已删除"); render();
+          };
+          td.appendChild(d1);
+        } else {
+          td.appendChild(el("span", { class: "muted", style: "font-size:12px" }, "系统级不可删"));
+        }
+        tr.appendChild(td);
+        t.appendChild(tr);
+      });
+      listArea.innerHTML = "";
+      listArea.appendChild(t);
+    } catch (err) {
+      listArea.innerHTML = `<div style="text-align:center;padding:40px;color:#ef4444;font-size:14px">
+        ⚠️ 加载失败：${esc(err.message || "未知错误")}<br>
+        <button class="btn btn-sm" style="margin-top:10px" onclick="render()">重试</button>
+      </div>`;
     }
-    tr.appendChild(td);
-    t.appendChild(tr);
-  });
-  wrap.appendChild(t);
+  })();
   return wrap;
 }
 
@@ -1748,6 +1776,18 @@ function viewSettings() {
     wrap.appendChild(el("div", { style: "margin:10px 0;padding:12px;border-radius:8px;background:#eef6ff;border:1px solid #bcdcff;color:#0b3d91;font-size:13px" },
       "🌐 这是「公网分享版」：数据保存在您自己的浏览器里（独立空间，互不可见）。因为纯前端无法直连邮件服务器，「发送」会生成标准 .eml 邮件文件——下载后双击用 Outlook / Foxmail / 网页邮箱打开，即可真实发送给客户。"));
   }
+
+  // 个人设置卡片（所有用户可见：修改显示名称 + 密码）
+  const profileCard = el("div", { class: "card" });
+  profileCard.appendChild(el("div", { class: "label" }, "👤 个人设置"));
+  profileCard.appendChild(el("div", { class: "muted", style: "margin-bottom:10px;font-size:13px" },
+    "修改您的显示名称（用于邮件署名）和登录密码。也可点击右上角用户名快速进入。"));
+  const profileBar = el("div", { class: "action-bar" });
+  const btnProfile = el("button", { class: "btn btn-ok" }, "✏️ 修改名称 / 密码");
+  btnProfile.onclick = () => openChangeMyPassword();
+  profileBar.appendChild(btnProfile);
+  profileCard.appendChild(profileBar);
+  wrap.appendChild(profileCard);
 
   // 快速预设
   const presets = [
@@ -1950,7 +1990,7 @@ function viewAdmin() {
   const actionBar = el("div", { class: "action-bar" });
   const btnCreate = el("button", { class: "btn btn-primary" }, "➕ 新建成员 / 管理员");
   btnCreate.onclick = () => openCreateUser();
-  const btnMyPwd = el("button", { class: "btn btn-ok" }, "🔑 修改我的密码");
+  const btnMyPwd = el("button", { class: "btn btn-ok" }, "👤 个人设置（名称/密码）");
   btnMyPwd.onclick = () => openChangeMyPassword();
   actionBar.appendChild(btnCreate); actionBar.appendChild(btnMyPwd);
   wrap.appendChild(actionBar);
@@ -2092,16 +2132,31 @@ function openCreateUser() {
 
 function openChangeMyPassword() {
   const html = `
-    <div class="cfg-row"><label>原密码 *</label><input id="mp-old" class="inp" type="password" placeholder="当前登录密码"></div>
-    <div class="cfg-row"><label>新密码 *</label><input id="mp-new" class="inp" type="password" placeholder="至少 4 位"></div>
-    <div class="action-bar"><button class="btn btn-primary" id="mp-ok">确认修改</button></div>`;
-  openModal("修改我的密码", html);
+    <div class="cfg-row"><label>当前用户名</label><input class="inp" value="${esc(USER.username)}" disabled style="background:#f3f4f6;color:#6b7280"></div>
+    <div class="cfg-row"><label>显示名称 <span style="color:#D35400">★</span></label><input id="mp-dn" class="inp" value="${esc(USER.display_name || '')}" placeholder="用于邮件署名、界面展示"></div>
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0">
+    <div class="cfg-row"><label>原密码</label><input id="mp-old" class="inp" type="password" placeholder="留空则不修改密码"></div>
+    <div class="cfg-row"><label>新密码</label><input id="mp-new" class="inp" type="password" placeholder="留空则不修改密码（至少 4 位）"></div>
+    <div class="action-bar"><button class="btn btn-primary" id="mp-ok">保存修改</button></div>`;
+  openModal("👤 个人设置（密码 / 显示名称）", html);
   $("#mp-ok").onclick = async () => {
+    const dn = ($("#mp-dn").value || "").trim();
     const oldp = $("#mp-old").value, newp = $("#mp-new").value;
-    if (newp.length < 4) { toast("新密码至少 4 位"); return; }
-    const r = await api("POST", "/api/me/change-password", { old_password: oldp, new_password: newp });
-    if (r.ok) { toast("密码已修改，下次登录请使用新密码"); closeModal(); }
-    else toast("失败：" + (r.data.error || ""));
+    if (!dn) { toast("显示名称不能为空"); return; }
+    if (newp && newp.length < 4) { toast("新密码至少 4 位"); return; }
+    // 更新显示名称
+    const r1 = await api("POST", "/api/me/profile", { display_name: dn });
+    if (!r1.ok) { toast("显示名称修改失败：" + (r1.data.error || "")); return; }
+    USER.display_name = dn;
+    $("#cur-user").textContent = dn || USER.username;
+    // 如果填了新密码就一起改
+    if (newp) {
+      const r2 = await api("POST", "/api/me/change-password", { old_password: oldp, new_password: newp });
+      if (!r2.ok) { toast("密码修改失败：" + (r2.data.error || "")); return; }
+      closeModal(); toast("✅ 显示名称和密码都已更新");
+    } else {
+      closeModal(); toast("✅ 显示名称已更新");
+    }
   };
 }
 

@@ -1897,6 +1897,14 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("UPDATE users SET pass_hash=?, salt=? WHERE id=?", (h, salt, uid))
                 conn.commit()
                 return json_resp({"ok": True})
+            if path == "/api/me/profile":
+                # 修改显示名称（成员可自行修改）
+                display_name = (d.get("display_name") or "").strip()
+                if not display_name:
+                    return json_resp({"error": "显示名称不能为空"}, 400)
+                conn.execute("UPDATE users SET display_name=? WHERE id=?", (display_name, uid))
+                conn.commit()
+                return json_resp({"ok": True, "display_name": display_name})
         finally:
             conn.close()
         return json_resp({"error": "not found"}, 404)
