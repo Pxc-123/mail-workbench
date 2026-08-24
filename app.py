@@ -1843,6 +1843,89 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
                 new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 return json_resp({"ok": True, "id": new_id})
+            if path == "/api/exhibitions/batch-import":
+                # 批量导入展会（支持 xlsx/xls/csv）
+                b64_data = d.get("content_b64", "")
+                filename = d.get("filename", "import.xlsx")
+                if not b64_data:
+                    return json_resp({"error": "请选择文件"}, 400)
+                import base64 as b64mod
+                try:
+                    raw = b64mod.b64decode(b64_data)
+                except Exception as e:
+                    return json_resp({"error": f"文件解码失败：{str(e)}"}, 400)
+                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "xlsx"
+                rows = []
+                headers = []
+                try:
+                    if ext in ("xlsx", "xls"):
+                        import io
+                        import openpyxl
+                        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+                        ws = wb.active
+                        iter_rows = list(ws.iter_rows(values_only=True))
+                        if not iter_rows:
+                            return json_resp({"error": "文件为空，没有数据行"}, 400)
+                        headers = [str(c or "").strip() for c in iter_rows[0]]
+                        for r in iter_rows[1:]:
+                            if any(c is not None for c in r):
+                                rows.append([str(c or "") for c in r])
+                    elif ext == "csv":
+                        import csv, io
+                        reader = csv.reader(io.StringIO(raw.decode("utf-8-sig", errors="replace")))
+                        raw_rows = list(reader)
+                        if not raw_rows:
+                            return json_resp({"error": "CSV 文件为空"}, 400)
+                        headers = [c.strip() for c in raw_rows[0]]
+                        for r in raw_rows[1:]:
+                            if any(c.strip() for c in r):
+                                rows.append([c.strip() for c in r])
+                    else:
+                        return json_resp({"error": f"不支持的文件格式 .{ext}，请用 .xlsx / .xls / .csv"}, 400)
+                except ImportError as e:
+                    return json_resp({"error": f"服务器缺少解析依赖（{str(e)}）"}, 500)
+                except Exception as e:
+                    return json_resp({"error": f"文件解析失败：{str(e)}"}, 400)
+                if not rows:
+                    return json_resp({"error": "文件只有表头，没有数据行"}, 400)
+                # 列名映射：支持中英文多种写法
+                col_map = {}
+                name_cols = ["展会名称", "名称", "展会展称", "name", "展会"]
+                city_cols = ["城市", "举办城市", "city", "地点"]
+                date_cols = ["档期", "日期", "展期", "时间", "date", "date_text"]
+                note_cols = ["备注", "说明", "亮点", "note", "注释"]
+                for i, h in enumerate(headers):
+                    hl = h.lower().strip()
+                    for mc in name_cols:
+                        if hl == mc.lower() or mc.lower() in hl: col_map["name"] = i; break
+                    for mc in city_cols:
+                        if hl == mc.lower() or mc.lower() in hl: col_map["city"] = i; break
+                    for mc in date_cols:
+                        if hl == mc.lower() or mc.lower() in hl: col_map["date_text"] = i; break
+                    for mc in note_cols:
+                        if hl == mc.lower() or mc.lower() in hl: col_map["note"] = i; break
+                if "name" not in col_map:
+                    return json_resp({"error": f"未找到「展会名称」列。当前表头：{headers}。请确保第一列包含展会名称。", "headers": headers}, 400)
+                imported = 0
+                errors = []
+                for ri, row in enumerate(rows):
+                    name = (row[col_map["name"]] if col_map["name"] < len(row) else "").strip()
+                    if not name:
+                        continue  # 跳过空名称行
+                    city = (row[col_map["city"]] if "city" in col_map and col_map["city"] < len(row) else "").strip()
+                    dt = (row[col_map["date_text"]] if "date_text" in col_map and col_map["date_text"] < len(row) else "").strip()
+                    note = (row[col_map["note"]] if "note" in col_map and col_map["note"] < len(row) else "").strip()
+                    try:
+                        conn.execute("INSERT INTO exhibitions (user_id,name,city,date_text,note) VALUES (?,?,?,?,?)",
+                                     (uid, name, city, dt, note))
+                        imported += 1
+                    except Exception as e:
+                        errors.append(f"第{ri+2}行「{name}」: {str(e)}")
+                conn.commit()
+                resp = {"ok": True, "imported": imported, "total": len(rows), "errors": errors}
+                if errors:
+                    resp["warning"] = f"成功 {imported} 条，{len(errors)} 行跳过"
+                return json_resp(resp)
             if path == "/api/drafts":
                 title = (d.get("title") or "").strip() or "未命名草稿"
                 payload = json.dumps(d.get("payload") or {}, ensure_ascii=False)

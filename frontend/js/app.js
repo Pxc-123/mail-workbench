@@ -651,10 +651,74 @@ async function openDraftsPanel() {
   }, 0);
 }
 
+/* ---------- 展会资料自动关联 ---------- */
+/** 根据展会名称自动加载该展会绑定的资料附件到 STATE.attachments */
+async function autoLoadExMaterials(exName) {
+  const hint = $("#ex-mat-hint");
+  if (!hint || !exName?.trim()) { if (hint) { hint.style.display = "none"; } return; }
+  hint.style.display = "block";
+  hint.style.background = "#eff6ff";
+  hint.style.border = "1px solid #93c5fd";
+  hint.style.color = "#1e40af";
+  hint.innerHTML = "⏳ 正在查找展会资料…";
+  try {
+    // 从缓存或接口获取完整展会列表（含 id）
+    const exs = await getExhibitions();
+    const match = exs.find(e => e.name === exName.trim());
+    if (!match) {
+      hint.style.background = "#fefce8";
+      hint.style.border = "1px solid #fde047";
+      hint.style.color = "#854d0e";
+      hint.innerHTML = `⚠️ 「${esc(exName)}」未在展会库中找到（可去「展会管理」新建）`;
+      return;
+    }
+    // 查询该展会的资料
+    const r = await api("GET", "/api/materials");
+    const mats = (r.data || []).filter(m => Number(m.exhibition_id) === Number(match.id));
+    if (!mats.length) {
+      hint.style.background = "#f5f5f5";
+      hint.style.border = "1px solid #d1d5db";
+      hint.style.color = "#6b7280";
+      hint.innerHTML = `📎 该展会暂无绑定资料（可在「资料库」上传时选择所属展会）`;
+      // 清除之前自动加载的展会资料（保留手动添加的）
+      STATE.attachments = STATE.attachments.filter(a => a._source !== "auto_ex");
+      updateAttInfo();
+      return;
+    }
+    // 合并：去掉旧的自动来源，加入新的
+    STATE.attachments = STATE.attachments.filter(a => a._source !== "auto_ex");
+    mats.forEach(m => {
+      if (!STATE.attachments.find(a => a.id === m.id)) {
+        STATE.attachments.push({ id: m.id, name: m.name, _source: "auto_ex" });
+      }
+    });
+    // 更新提示
+    hint.style.background = "#ecfdf5";
+    hint.style.border = "1px solid #86efac";
+    hint.style.color = "#166534";
+    hint.innerHTML = `✅ 已自动加载 <b>${mats.length}</b> 个展会资料：${mats.map(m => esc(m.name)).join("、")}<br><span style="color:#15803d;font-size:11px">💡 AI 生成邮件时将主要基于这些资料内容</span>`;
+    updateAttInfo();
+    markDraftDirty();
+  } catch(e) {
+    hint.style.background = "#fef2f2";
+    hint.style.border = "1px solid #fca5a5";
+    hint.style.color = "#991b1b";
+    hint.innerHTML = "⚠️ 加载展会资料失败：" + esc(e.message);
+  }
+}
+
+function updateAttInfo() {
+  const el = $("#att-info");
+  if (!el) return;
+  el.textContent = STATE.attachments.length
+    ? "当前附件：" + STATE.attachments.map(a => a.name).join("、")
+    : "当前附件：无";
+}
+
 function viewGen() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "🤖 AI 一键生成邮件模板"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "左侧配置参数 → 右侧预览/编辑 → 保存模板或批量发送（支持变量 {客户名称}{联系人姓名}{销售姓名} 自动替换）"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "左侧配置参数 → 右侧预览/编辑 → 保存模板或批量发送（支持变量 {客户名称}{联系人姓名}{销售姓名} 自动替换）。选择目标展会后会自动加载该展会的绑定资料，AI 将主要基于资料内容生成邮件。"));
   // 草稿工具栏：保存草稿 / 草稿箱
   const draftBar = el("div", { style: "display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap" });
   draftBar.appendChild(el("span", { style: "font-size:12px;color:#888" }, "💾 草稿双保险："));
@@ -675,6 +739,9 @@ function viewGen() {
   const exDl = el("datalist", { id: "dl-ex" });
   const exInput = el("input", { class: "inp", id: "cfg-ex", list: "dl-ex", placeholder: "输入或选择目标展会…", autocomplete: "off" });
   left.appendChild(exDl); left.appendChild(exInput);
+  // 展会资料自动关联提示区
+  const exMatHint = el("div", { id: "ex-mat-hint", style: "display:none;margin-top:6px;padding:8px;border-radius:6px;font-size:12px;line-height:1.5" });
+  left.appendChild(exMatHint);
   // 每次进入 AI 生成页都强制刷新展会列表（确保新建的展会立即出现）
   getExhibitions(true).then(exs => {
     exDl.innerHTML = "";
@@ -682,6 +749,21 @@ function viewGen() {
     // 如果当前值不在列表中但用户之前选过，保留；否则默认第一个
     if (STATE.gen.exhibition && exs.some(e => e.name === STATE.gen.exhibition)) exInput.value = STATE.gen.exhibition;
     else if (exs.length && !exInput.value) { exInput.value = exs[0].name; STATE.gen.exhibition = exs[0].name; }
+    // 进入页面时也触发一次资料关联
+    autoLoadExMaterials(exInput.value);
+  });
+  // 选择/输入展会名称后，自动关联该展会的资料附件
+  let _exMatTimer = null;
+  exInput.addEventListener("input", () => {
+    clearTimeout(_exMatTimer);
+    _exMatTimer = setTimeout(() => {
+      STATE.gen.exhibition = exInput.value;
+      autoLoadExMaterials(exInput.value);
+    }, 400);
+  });
+  exInput.addEventListener("change", () => {
+    STATE.gen.exhibition = exInput.value;
+    autoLoadExMaterials(exInput.value);
   });
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
   const ctSel = el("select", { class: "inp", id: "cfg-ct" }, [el("option", { value: "" }, "加载中…")]);
@@ -741,7 +823,7 @@ function viewGen() {
     });
     gen.textContent = "⚡ AI 一键生成邮件"; gen.disabled = false;
     if (!r.ok) { toast("生成失败"); return; }
-    STATE.gen = { exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, custom: custom.value, subject: r.data.subject, body: r.data.body };
+    STATE.gen = { exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value, custom: custom.value, subject: r.data.subject, body: r.data.body };
     STATE.origMail = { subject: r.data.subject, body: r.data.body };
     STATE.lang = "zh";
     updateLangButtons();
@@ -1661,6 +1743,9 @@ function viewExposManage() {
   const btnNew = el("button", { class: "btn btn-primary" }, "➕ 新建展会");
   btnNew.onclick = () => editExhibitionModal(null);
   bar.appendChild(btnNew);
+  const btnImport = el("button", { class: "btn", style: "margin-left:8px;background:#f0fdf4;color:#166534;border-color:#86efac" }, "📥 批量导入（Excel/表格）");
+  btnImport.onclick = openExpoImportModal;
+  bar.appendChild(btnImport);
   const btnRefresh = el("button", { class: "btn", style: "margin-left:8px" }, "🔄 刷新");
   btnRefresh.onclick = () => render();
   bar.appendChild(btnRefresh);
@@ -1761,6 +1846,112 @@ async function editExhibitionModal(e) {
     if (!r.ok) { toast("保存失败：" + (r.data.error || "")); return; }
     closeModal(); toast(isNew ? "已新建：" + name : "已保存"); render();
   };
+}
+
+/* ---------- 展会批量导入 ---------- */
+function openExpoImportModal() {
+  const html = `
+    <div style="margin-bottom:14px">
+      <div style="font-weight:bold;margin-bottom:6px">📁 选择 Excel / CSV 文件</div>
+      <input type="file" id="expo-import-file" class="inp" accept=".xlsx,.xls,.csv" style="padding:8px">
+      <div style="font-size:11px;color:#888;margin-top:4px">支持 .xlsx / .xls / .csv 格式</div>
+    </div>
+    <div style="background:#fefce8;border:1px solid #fde047;border-radius:8px;padding:12px;font-size:12px;color:#854d0e;margin-bottom:14px">
+      <b>📋 表格格式要求（第一行为表头）：</b><br>
+      必填：<b>展会名称</b>（也支持「名称」「name」）<br>
+      可选：城市 / 档期 / 备注<br>
+      <span style="color:#a16207">💡 每行一场展会，空名称行自动跳过</span>
+    </div>
+    <div id="expo-import-preview" style="display:none;margin-bottom:12px">
+      <b>预览（前 5 行）：</b>
+      <table class="tbl" id="expo-import-tbl" style="font-size:12px;margin-top:6px"></table>
+    </div>
+    <button class="btn btn-primary btn-block" id="expo-import-go" disabled>📥 确认导入</button>`;
+  openModal("📥 批量导入展会", html);
+  const fileInput = $("#expo-import-file");
+  const btnGo = $("#expo-import-go");
+  let parsedData = null; // { headers, rows }
+  fileInput.onchange = async () => {
+    const f = fileInput.files[0];
+    if (!f) return;
+    btnGo.disabled = true;
+    btnGo.textContent = "⏳ 解析中…";
+    try {
+      const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
+      // 先本地预览解析
+      const r = await api("POST", "/api/exhibitions/batch-import", { content_b64: b64, filename: f.name, dry_run: true });
+      // 后端不支持 dry_run，直接用正式接口但前端只预览
+      // 改为：先读本地做预览展示，确认后再调接口
+      parsedData = await parseExpoFileLocal(b64, f.name);
+      if (parsedData.error) { toast(parsedData.error); btnGo.textContent = "📥 确认导入"; return; }
+      // 显示预览表
+      const prevArea = $("#expo-import-preview");
+      const tbl = $("#expo-import-tbl");
+      tbl.innerHTML = "";
+      const hr = el("tr", {}, parsedData.headers.map(h => el("th", {}, h)));
+      tbl.appendChild(hr);
+      parsedData.rows.slice(0, 5).forEach(row => {
+        const tr = el("tr", {}, row.map(c => el("td", {}, c || "—")));
+        tbl.appendChild(tr);
+      });
+      if (parsedData.rows.length > 5) {
+        tbl.appendChild(el("tr", {}, [el("td", { colspan: parsedData.headers.length, style: "text-align:center;color:#888;font-size:11px" },
+          `... 还有 ${parsedData.rows.length - 5} 行`)]));
+      }
+      prevArea.style.display = "block";
+      btnGo.disabled = false;
+      btnGo.textContent = `📥 确认导入（${parsedData.rows.length} 场展会）`;
+    } catch(e) {
+      toast("文件解析失败：" + e.message);
+      btnGo.textContent = "📥 确认导入";
+    }
+  };
+  btnGo.onclick = async () => {
+    if (!parsedData || !parsedData.rows.length) return;
+    const f = fileInput.files[0];
+    if (!f) { toast("请先选择文件"); return; }
+    btnGo.disabled = true;
+    btnGo.textContent = "⏳ 导入中…";
+    try {
+      const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(f); });
+      const r = await api("POST", "/api/exhibitions/batch-import", { content_b64: b64, filename: f.name });
+      if (!r.ok) { toast("导入失败：" + (r.data.error || "")); btnGo.textContent = "📥 确认导入"; btnGo.disabled = false; return; }
+      const msg = `成功导入 ${r.data.imported} 场展会` + (r.data.errors?.length ? `，${r.data.errors.length} 行跳过` : "");
+      toast(msg);
+      closeModal(); render();
+      // 刷新展会缓存，让 AI 页立即可用
+      EXHIBITIONS = [];
+    } catch(e) {
+      toast("导入出错：" + e.message);
+      btnGo.textContent = "📥 确认导入"; btnGo.disabled = false;
+    }
+  };
+}
+
+/** 本地预览解析 Excel/CSV（仅用于展示，不写入数据库） */
+async function parseExpoFileLocal(b64, filename) {
+  const ext = filename.split(".").pop().toLowerCase();
+  const raw = atob(b64);
+  const rows = [];
+  let headers = [];
+  try {
+    if (ext === "csv") {
+      const lines = raw.split("\n").filter(l => l.trim());
+      if (!lines.length) return { error: "CSV 文件为空" };
+      headers = lines[0].split(",").map(h => h.trim());
+      for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+        if (cells.some(c => c)) rows.push(cells);
+      }
+    } else {
+      // xlsx/xls — 无法在纯前端无依赖解析，返回提示让用户直接点导入
+      headers = ["展会名称", "城市", "档期", "备注"];
+      return { headers, rows: [], hint: "xlsx 文件将在服务端解析，请直接点击「确认导入」" };
+    }
+  } catch(e) {
+    return { error: "解析失败：" + e.message };
+  }
+  return { headers, rows };
 }
 
 /* ================= 系统设置 ================= */
