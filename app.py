@@ -1243,17 +1243,35 @@ class Handler(BaseHTTPRequestHandler):
         if "." in last and not path.startswith("/api/"):
             return self.serve_static(path.lstrip("/"), None)
         # API
-        code, headers, body = self.route_get(path)
+        code, headers, body = self._safe_route("GET", path)
         self._send(code, headers, body)
+
+    def _safe_route(self, method, path):
+        try:
+            if method == "GET":
+                return self.route_get(path)
+            if method == "POST":
+                return self.route_post(path)
+            if method == "PATCH":
+                return self.route_patch(path)
+            if method == "DELETE":
+                return self.route_delete(path)
+            return 404, {"Content-Type": "application/json; charset=utf-8"}, json.dumps({"error": "method not allowed"}).encode()
+        except Exception as e:
+            import traceback as _tb
+            err = _tb.format_exc()
+            print("[DISPATCH-ERROR] %s %s:\n%s" % (method, path, err), flush=True)
+            return 500, {"Content-Type": "application/json; charset=utf-8"}, \
+                json.dumps({"error": "internal_server_error", "detail": str(e), "trace": err}, ensure_ascii=False).encode("utf-8")
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        code, headers, body = self.route_post(path)
+        code, headers, body = self._safe_route("POST", path)
         self._send(code, headers, body)
 
     def do_PATCH(self):
         path = urllib.parse.urlparse(self.path).path
-        code, headers, body = self.route_patch(path)
+        code, headers, body = self._safe_route("PATCH", path)
         self._send(code, headers, body)
 
     def do_PUT(self):
@@ -1262,7 +1280,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
-        code, headers, body = self.route_delete(path)
+        code, headers, body = self._safe_route("DELETE", path)
         self._send(code, headers, body)
 
     def serve_static(self, rel, ctype):
@@ -1445,23 +1463,29 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/admin/backup/auto-trigger":
             # 立即把 DB + 附件全量同步到 COS（管理员可手动触发）
-            db_ok = cos_upload_db()
-            up_count = 0
-            if _os.path.isdir(UPLOAD_DIR):
-                for root, dirs, files in _os.walk(UPLOAD_DIR):
-                    for fn in files:
-                        fp = _os.path.join(root, fn)
-                        if cos_upload_attachment(fp):
-                            up_count += 1
-            # 写 backup_meta
             try:
-                c4 = get_db()
-                c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_at',?)", (now_iso(),))
-                c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_source','admin-manual')",)
-                c4.commit(); c4.close()
-            except Exception:
-                pass
-            return json_resp({"ok": True, "db_synced": db_ok, "uploads_synced": up_count})
+                db_ok = cos_upload_db()
+                up_count = 0
+                if _os.path.isdir(UPLOAD_DIR):
+                    for root, dirs, files in _os.walk(UPLOAD_DIR):
+                        for fn in files:
+                            fp = _os.path.join(root, fn)
+                            if cos_upload_attachment(fp):
+                                up_count += 1
+                # 写 backup_meta
+                try:
+                    c4 = get_db()
+                    c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_at',?)", (now_iso(),))
+                    c4.execute("INSERT OR REPLACE INTO backup_meta(key,value) VALUES ('last_backup_source','admin-manual')",)
+                    c4.commit(); c4.close()
+                except Exception as e:
+                    print("[COS] 写 backup_meta 失败：", e, flush=True)
+                return json_resp({"ok": True, "db_synced": db_ok, "uploads_synced": up_count})
+            except Exception as e:
+                import traceback as _tb
+                err = _tb.format_exc()
+                print("[AUTO-TRIGGER-ERROR]:\n%s" % err, flush=True)
+                return json_resp({"ok": False, "error": str(e), "trace": err}, 500)
         return json_resp({"error": "not found"}, 404)
 
     def admin_post(self, path, admin):
