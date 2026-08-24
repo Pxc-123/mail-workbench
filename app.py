@@ -1324,6 +1324,7 @@ def _provider_preset(provider):
         "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
         "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
         "ollama": ("http://localhost:11434/v1", "qwen2.5:7b"),
+        "zhipu": ("https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
         "custom": ("", "gpt-4o-mini"),
     }
     return presets.get(provider, presets["custom"])

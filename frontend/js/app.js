@@ -2301,6 +2301,7 @@ function viewAdmin() {
         <option value="qwen" ${s.ai_provider === "qwen" ? "selected" : ""}>通义千问 Qwen（有免费额度）</option>
         <option value="openai" ${s.ai_provider === "openai" ? "selected" : ""}>OpenAI（GPT-4o-mini）</option>
         <option value="ollama" ${s.ai_provider === "ollama" ? "selected" : ""}>本地 Ollama（完全免费）</option>
+        <option value="zhipu" ${s.ai_provider === "zhipu" ? "selected" : ""}>智谱 GLM-4-Flash（完全免费·推荐）</option>
         <option value="custom" ${s.ai_provider === "custom" ? "selected" : ""}>自定义兼容接口</option>
       </select>
     </div>
@@ -2312,6 +2313,7 @@ function viewAdmin() {
       · DeepSeek：约 ¥1 / 百万 token，单封招展邮件 ≈ <b>¥0.001</b>，最省；<br>
       · 通义千问：新用户有免费额度，qwen-plus 约 ¥0.004/封，qwen-max 稍贵；<br>
       · OpenAI GPT-4o-mini：约 ¥0.01/封；<br>
+      · 智谱 GLM-4-Flash：<b>完全免费、无额度限制</b>，国内 API 不受 GFW，最推荐；<br>
       · 本地 Ollama（如 qwen2.5:7b）：<b>完全免费</b>，需自备机器/容器算力。<br>
       <span style="color:#64748b">多版本一次生成 5 封，按 5 倍折算，仍极低。调用失败会自动回退模板，不影响出信。</span>
     </div>`;
@@ -2361,6 +2363,7 @@ function viewAdmin() {
       qwen: ["https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
       openai: ["https://api.openai.com/v1", "gpt-4o-mini"],
       ollama: ["http://localhost:11434/v1", "qwen2.5:7b"],
+      zhipu: ["https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"],
       custom: ["", "gpt-4o-mini"],
     };
     const p = presets[this.value] || presets.custom;
