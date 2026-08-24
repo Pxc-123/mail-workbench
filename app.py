@@ -1057,6 +1057,45 @@ def _make_angle_lead(lead, ex, profile, material_summary, news_items):
     return ""
 
 
+def _strip_llm_prefix(text):
+    """清洗 LLM 输出的正文开头，去掉它自动添加的称呼/问候/邮件头，避免与代码拼接的 salutation 重复。
+    原则：只删除开头的称呼/问候语行，保留后续正文。
+    """
+    import re
+    if not text:
+        return text
+    # 最多检查前 5 行
+    lines = text.split("\n")
+    out = []
+    skipped = 0
+    salutation_patterns = [
+        r"^\s*尊敬的\s*[\{【\(].*[\}】\)]",                  # "尊敬的{联系人}..."
+        r"^\s*尊敬的\s*\S+\s*[\(（].*[\)）]",                  # "尊敬的X（Y）："
+        r"^\s*尊敬的.{0,30}[：:]\s*$",                         # "尊敬的xxx："
+        r"^\s*尊敬的.{0,40}",
+        r"^\s*您好[！!，,。\s]*$",
+        r"^\s*你好[！!，,。\s]*$",
+        r"^\s*Dear\s+.{0,40}",
+        r"^\s*Hi\s+.{0,40}",
+        r"^\s*Hello\s+.{0,40}",
+        r"^\s*【.*】\s*$",                                  # 邮件头如【关于XX的邮件】
+        r"^\s*主题[：:].*$",
+        r"^\s*关于\s*[\S\s]{0,40}的(?:一封)?邮件[：:.\s]*$",
+        r"^\s*Subject[：:].*$",
+    ]
+    pat = re.compile("|".join(salutation_patterns))
+    for ln in lines:
+        if skipped < 5 and not ln.strip():
+            skipped += 1
+            continue  # 跳过开头空行
+        if skipped < 2 and ln.strip() and pat.match(ln):
+            skipped += 1
+            continue  # 删掉称呼行
+        out.append(ln)
+    cleaned = "\n".join(out).lstrip("\n")
+    return cleaned if cleaned else text
+
+
 def build_email_multi(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None, n=5, settings=None):
     """一次产出 4-5 个不同角度的邮件版本（结构/侧重点明显不同）。
     网络亮点与附件要点各抓取/提取一次，避免重复请求；每个角度强制不同开场白。"""
@@ -1256,32 +1295,35 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
             if angle:
                 _angle_desc = (angle.get("lead") or angle.get("subject") or "")
             _prompt = (
-                f"你是一名资深的海外食品展会招展顾问，请用中文写一封发给「{ctype}」企业负责人的招展邮件。\n"
+                f"你是一名资深的海外食品展会招展顾问，请用中文写一封发给「{ctype}」企业负责人的招展邮件正文。\n"
                 f"展会名称：{ex}\n"
                 f"展会时间：{_normalize_date_text(profile.get('date_hint') or profile.get('date_text') or '待定')}\n"
                 f"举办城市：{profile.get('city') or '待定'}\n"
-                f"展会亮点：{('、'.join(_hl_uniq[:3]) if _hl_uniq else '详见资料')}\n"
+                f"展会亮点参考：{('、'.join(_hl_uniq[:3]) if _hl_uniq else '详见资料')}\n"
                 f"客户类型：{ctype}；使用场景：{SCENE_LABELS.get(scene_key, scene_key)}；语气：{tone_key}\n"
             )
             if _angle_desc:
-                _prompt += f"本次写作重点角度：{_angle_desc}\n"
+                _prompt += f"本次写作角度：{_angle_desc}\n"
             if material_summary:
-                _prompt += f"\n展会资料要点（请据此充实内容）：\n{material_summary}\n"
+                _prompt += f"\n展会资料要点（可在叙事中自然化用，不要直接列举）：\n{material_summary}\n"
             if prefetched_news:
                 _items = prefetched_news.get("items") or []
                 if _items:
-                    _news_txt = "\n".join("- " + (i.get("title", "") if isinstance(i, dict) else str(i)) for i in _items[:4])
-                    _prompt += f"\n可参考的近期行业资讯：\n{_news_txt}\n"
+                    _news_txt = "\n".join("- " + (i.get("title", "") if isinstance(i, dict) else str(i)) for i in _items[:3])
+                    _prompt += f"\n可参考的行业资讯（叙事化带入，不要列举标题）：\n{_news_txt}\n"
             _prompt += (
                 f"\n用户补充要求：{news if news else '无'}\n"
-                f"\n要求：邮件主题句已单独给出，这里只写正文。结构：1-2句开场白 + 展会价值 + 参展理由/行动号召 + 简短结尾。"
-                f"正文必须自然融入上述展会名称、展会时间、展会亮点（不要让它们像列表）。"
-                f"不要使用 markdown 标题，用纯文本段落。控制在 350 字以内。称呼用「尊敬的 {{联系人姓名}}（{{客户名称}}）：」占位。"
+                f"\n⚠️ 严格写作规则：\n"
+                f"1. 【禁止称呼】正文里绝对不要出现「尊敬的xxx」「您好」「Dear」等任何称呼与问候语——称呼已经由系统独立加在最上面，你只写称呼之后的内容。\n"
+                f"2. 【禁止堆砌事实】展会名称、时间、地点、亮点、规模等「事实信息」已由系统整理在邮件末尾独立展示，你在正文里只做「自然叙事化穿插」（如『本次展会将在日本千叶举办』即可），不要用列表、不要罗列数字、不要重复事实块里已有的所有信息。\n"
+                f"3. 【结构】正文只写 3 段：① 简短铺垫（1-2 句切入） ② 参展价值/理由（融入展会角度，不要列表化） ③ 行动号召（引导对方下一步）。\n"
+                f"4. 【格式】纯文本段落，不用 markdown 标题、不用 • 列表、不用 - 列项。控制在 250 字以内。\n"
+                f"5. 开篇直接进入正文内容，不要写任何邮件头（不要重复称呼、不要写展会名作为标题）。"
             )
             _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
             if _llm_body and len(_llm_body) > 30:
                 # 用 LLM 正文替换模板正文，但保留资料要点块与三要素块（确保信息完整）
-                scene_body = _llm_body
+                scene_body = _strip_llm_prefix(_llm_body)
                 llm_used = True
             else:
                 llm_error = "LLM返回为空或过短"
