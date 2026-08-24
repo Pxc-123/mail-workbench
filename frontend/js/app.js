@@ -2284,6 +2284,91 @@ function viewAdmin() {
   autoCard.appendChild(autoBar);
   wrap.appendChild(autoCard);
 
+  // —— AI 大模型配置（可绑定 DeepSeek / 通义千问 / OpenAI / 本地 Ollama）——
+  const aiCard = el("div", { class: "card" });
+  aiCard.appendChild(el("div", { class: "label" }, "🤖 AI 大模型配置（让邮件由真实大模型生成）"));
+  aiCard.appendChild(el("div", { class: "muted", style: "margin-bottom:10px;font-size:13px" },
+    "启用后，AI 生成邮件将调用真实大模型写作（更自然、可结合附件与网络资讯），不再是固定模板。不启用则继续用内置模板引擎。"));
+  const s = SETTINGS || {};
+  const aiHtml = `
+    <div class="cfg-row"><label>启用真实大模型生成</label>
+      <label class="switch"><input type="checkbox" id="ai-on" ${s.ai_enabled === "1" || s.ai_enabled === "true" ? "checked" : ""}><span class="slider"></span></label>
+      <span class="muted" style="font-size:12px">关闭则使用免费模板引擎</span>
+    </div>
+    <div class="cfg-row"><label>服务商</label>
+      <select id="ai-provider" class="inp">
+        <option value="deepseek" ${s.ai_provider === "deepseek" ? "selected" : ""}>DeepSeek（推荐，最便宜）</option>
+        <option value="qwen" ${s.ai_provider === "qwen" ? "selected" : ""}>通义千问 Qwen（有免费额度）</option>
+        <option value="openai" ${s.ai_provider === "openai" ? "selected" : ""}>OpenAI（GPT-4o-mini）</option>
+        <option value="ollama" ${s.ai_provider === "ollama" ? "selected" : ""}>本地 Ollama（完全免费）</option>
+        <option value="custom" ${s.ai_provider === "custom" ? "selected" : ""}>自定义兼容接口</option>
+      </select>
+    </div>
+    <div class="cfg-row"><label>API Key</label><input id="ai-key" class="inp" type="password" value="${esc(s.ai_api_key || "")}" placeholder="粘贴服务商 API Key（本地 Ollama 可留空）"></div>
+    <div class="cfg-row"><label>Base URL</label><input id="ai-base" class="inp" value="${esc(s.ai_base_url || "")}" placeholder="留空则按服务商自动填充"></div>
+    <div class="cfg-row"><label>模型名</label><input id="ai-model" class="inp" value="${esc(s.ai_model || "")}" placeholder="留空则按服务商默认"></div>
+    <div class="muted" style="font-size:12px;line-height:1.7;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;margin-top:6px">
+      <b>💰 收费参考（按 token 计费，一封邮件约 ¥0.001~0.01）：</b><br>
+      · DeepSeek：约 ¥1 / 百万 token，单封招展邮件 ≈ <b>¥0.001</b>，最省；<br>
+      · 通义千问：新用户有免费额度，qwen-plus 约 ¥0.004/封，qwen-max 稍贵；<br>
+      · OpenAI GPT-4o-mini：约 ¥0.01/封；<br>
+      · 本地 Ollama（如 qwen2.5:7b）：<b>完全免费</b>，需自备机器/容器算力。<br>
+      <span style="color:#64748b">多版本一次生成 5 封，按 5 倍折算，仍极低。调用失败会自动回退模板，不影响出信。</span>
+    </div>`;
+  const aiBox = el("div");
+  aiBox.innerHTML = aiHtml;
+  aiCard.appendChild(aiBox);
+  const aiBar = el("div", { class: "action-bar" });
+  const btnSaveAI = el("button", { class: "btn btn-primary" }, "💾 保存 AI 配置");
+  btnSaveAI.onclick = async () => {
+    const payload = Object.assign({}, SETTINGS, {
+      ai_enabled: $("#ai-on").checked ? "1" : "0",
+      ai_provider: $("#ai-provider").value,
+      ai_api_key: $("#ai-key").value.trim(),
+      ai_base_url: $("#ai-base").value.trim(),
+      ai_model: $("#ai-model").value.trim(),
+    });
+    const r = await api("POST", "/api/settings", payload);
+    if (!r.ok) { toast("保存失败：" + (r.data.error || "")); return; }
+    SETTINGS = payload;
+    toast("✅ AI 配置已保存" + (payload.ai_enabled === "1" ? "，已启用大模型生成" : "，当前为模板引擎"));
+  };
+  const btnTestAI = el("button", { class: "btn" }, "🔌 测试连接");
+  btnTestAI.onclick = async () => {
+    btnTestAI.disabled = true; btnTestAI.textContent = "测试中…";
+    try {
+      const r = await api("POST", "/api/ai/generate", {
+        exhibition: "测试展会", customer_type: "食品企业", scene: "1", tone: "正式商务",
+        custom_input: "", signature: "招展顾问",
+        material_ids: [],
+        _llm_test: true,
+        ai_provider: $("#ai-provider").value,
+        ai_api_key: $("#ai-key").value.trim(),
+        ai_base_url: $("#ai-base").value.trim(),
+        ai_model: $("#ai-model").value.trim(),
+      });
+      if (r.ok && r.data && r.data.body && r.data.body.length > 30) toast("✅ 大模型连接成功，已生成测试邮件");
+      else toast("⚠️ 生成返回异常，请检查 Key / Base URL");
+    } catch (e) { toast("测试异常：" + e.message); }
+    btnTestAI.disabled = false; btnTestAI.textContent = "🔌 测试连接";
+  };
+  aiBar.appendChild(btnSaveAI); aiBar.appendChild(btnTestAI);
+  aiCard.appendChild(aiBar);
+  // 切换服务商时自动填充默认 Base URL / 模型
+  aiBox.querySelector("#ai-provider").onchange = function () {
+    const presets = {
+      deepseek: ["https://api.deepseek.com/v1", "deepseek-chat"],
+      qwen: ["https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"],
+      openai: ["https://api.openai.com/v1", "gpt-4o-mini"],
+      ollama: ["http://localhost:11434/v1", "qwen2.5:7b"],
+      custom: ["", "gpt-4o-mini"],
+    };
+    const p = presets[this.value] || presets.custom;
+    if (!$("#ai-base").value) $("#ai-base").value = p[0];
+    if (!$("#ai-model").value) $("#ai-model").value = p[1];
+  };
+  wrap.appendChild(aiCard);
+
   const actionBar = el("div", { class: "action-bar" });
   const btnCreate = el("button", { class: "btn btn-primary" }, "➕ 新建成员 / 管理员");
   btnCreate.onclick = () => openCreateUser();

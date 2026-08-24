@@ -1057,7 +1057,7 @@ def _make_angle_lead(lead, ex, profile, material_summary, news_items):
     return ""
 
 
-def build_email_multi(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None, n=5):
+def build_email_multi(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None, n=5, settings=None):
     """一次产出 4-5 个不同角度的邮件版本（结构/侧重点明显不同）。
     网络亮点与附件要点各抓取/提取一次，避免重复请求；每个角度强制不同开场白。"""
     ex = exhibition or "本次海外食品展"
@@ -1071,14 +1071,15 @@ def build_email_multi(exhibition, customer_type, scene, tone, custom_input, sign
             ang["opening"] = OPENING_VARIANTS[i]
         subj, body = build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid,
                                  material_ids=material_ids, angle=ang,
-                                 prefetched_news=prefetched_news, prefetched_material_summary=prefetched_material)
+                                 prefetched_news=prefetched_news, prefetched_material_summary=prefetched_material,
+                                 settings=settings)
         versions.append({"index": i + 1, "angle": ang.get("label"), "angle_key": ang.get("key"),
                          "subject": subj, "body": body})
     return versions
 
 
 def build_email(exhibition, customer_type, scene, tone, custom_input,  signature, uid=None, material_ids=None,
-                angle=None, prefetched_news=None, prefetched_material_summary=None):
+                angle=None, prefetched_news=None, prefetched_material_summary=None, settings=None):
     ex = exhibition or "本次海外食品展"
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
@@ -1128,6 +1129,24 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         opening = random.choice(profile["openings"]) if profile.get("openings") else random.choice(OPENING_VARIANTS)
     closing = random.choice(CLOSING_VARIANTS)
     ex_info_para = _build_ex_info(ex, profile)
+    # 展会三要素信息块：每条邮件固定包含【展会名称 / 展会时间 / 展会亮点】
+    # 无论哪个场景、单版本或多版本，都确保收件人看到展会基本盘。
+    _facts_lines = [f"📌 展会信息", f"· 展会名称：{ex}"]
+    _date_text = profile.get("date_hint") or profile.get("date_text") or ""
+    _facts_lines.append(f"· 展会时间：{_normalize_date_text(_date_text) if _date_text else '待定（可向我索取最新档期）'}")
+    _hl_all = (profile.get("highlights") or []) + ([hl2] if hl2 else [])
+    _hl_seen = set()
+    _hl_uniq = []
+    for _h in _hl_all:
+        _h = (_h or "").strip()
+        if _h and _h not in _hl_seen:
+            _hl_seen.add(_h); _hl_uniq.append(_h)
+    _facts_lines.append("· 展会亮点：" + ("、".join(_hl_uniq[:3]) if _hl_uniq else "（详见资料，可向我要展位图与亮点清单）"))
+    if profile.get("city"):
+        _facts_lines.append(f"· 举办城市：{profile['city']}")
+    if profile.get("scale"):
+        _facts_lines.append(f"· 展会规模：{profile['scale']}")
+    ex_facts_block = "\n".join(_facts_lines)
     # 用户选定的资料内容：让邮件真正反映最新资料（PDF/Word 全文摘要）
     material_summary = prefetched_material_summary if prefetched_material_summary is not None else _summarize_materials(uid, material_ids or [])
     mat_block = f"【资料要点】\n{material_summary}\n\n" if material_summary else ""
@@ -1146,7 +1165,6 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
             f"{opening}\n\n"
             f"{angle_lead}\n\n" if angle_lead else f"{opening}\n\n"
             f"我是「{ex}」中国区招展团队的成员。本次致信是希望向贵司介绍这一重要的海外拓展机会。\n\n"
-            f"{ex_info_para}\n\n"
             f"结合{intro}，我们相信贵司的产品与本次展会的买家画像高度契合。\n\n"
             f"借此邮件，诚挚邀请贵司莅临{ex}，与海外买家面对面洽谈、拓展订单。如您方便，我可先发送展位图与参展方案供参考。\n\n"
             f"{closing}"
@@ -1224,7 +1242,47 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         lines = [l for l in scene_body.split("\n") if l.strip()]
         scene_body = "\n".join(lines[:3])  # 只保留前3段
 
-    body = f"{salutation}\n\n{scene_body}{mat_block}{tone_tail}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
+    # ---- 真实大模型生成分支（可配置）：启用后用 LLM 产出正文，失败自动回退模板 ----
+    llm_used = False
+    ai_on = bool(settings and str(settings.get("ai_enabled", "")) in ("1", "true", "True"))
+    if ai_on and not settings.get("ai_api_key") == "__skip__":
+        try:
+            _angle_desc = ""
+            if angle:
+                _angle_desc = (angle.get("lead") or angle.get("subject") or "")
+            _prompt = (
+                f"你是一名资深的海外食品展会招展顾问，请用中文写一封发给「{ctype}」企业负责人的招展邮件。\n"
+                f"展会名称：{ex}\n"
+                f"展会时间：{_normalize_date_text(profile.get('date_hint') or profile.get('date_text') or '待定')}\n"
+                f"举办城市：{profile.get('city') or '待定'}\n"
+                f"展会亮点：{('、'.join(_hl_uniq[:3]) if _hl_uniq else '详见资料')}\n"
+                f"客户类型：{ctype}；使用场景：{SCENE_LABELS.get(scene_key, scene_key)}；语气：{tone_key}\n"
+            )
+            if _angle_desc:
+                _prompt += f"本次写作重点角度：{_angle_desc}\n"
+            if material_summary:
+                _prompt += f"\n展会资料要点（请据此充实内容）：\n{material_summary}\n"
+            if prefetched_news:
+                _items = prefetched_news.get("items") or []
+                if _items:
+                    _news_txt = "\n".join("- " + (i.get("title", "") if isinstance(i, dict) else str(i)) for i in _items[:4])
+                    _prompt += f"\n可参考的近期行业资讯：\n{_news_txt}\n"
+            _prompt += (
+                f"\n用户补充要求：{news if news else '无'}\n"
+                f"\n要求：邮件主题句已单独给出，这里只写正文。结构：1-2句开场白 + 展会价值 + 参展理由/行动号召 + 简短结尾。"
+                f"正文必须自然融入上述展会名称、展会时间、展会亮点（不要让它们像列表）。"
+                f"不要使用 markdown 标题，用纯文本段落。控制在 350 字以内。称呼用「尊敬的 {{联系人姓名}}（{{客户名称}}）：」占位。"
+            )
+            _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
+            if _llm_body and len(_llm_body) > 30:
+                # 用 LLM 正文替换模板正文，但保留资料要点块与三要素块（确保信息完整）
+                scene_body = _llm_body
+                llm_used = True
+        except Exception as _e:
+            # 调用失败：静默回退到模板生成，不影响出信
+            print("[AI-LLM] 大模型调用失败，回退模板：", _e)
+
+    body = f"{salutation}\n\n{scene_body}{mat_block}{ex_facts_block}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
     # 主题：多版本模式下优先使用角度专属主题（含展会名），否则用场景默认主题
     if angle and angle.get("subject"):
@@ -1242,13 +1300,74 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
         subject = subject_map[scene_key]
     return subject, body
 
-# ---------------------------- 邮件发送 ----------------------------
+# ---------------------------- AI 大模型（可配置，真实调用） ----------------------------
+_AI_COLUMNS = ["ai_enabled", "ai_provider", "ai_base_url", "ai_api_key", "ai_model"]
+
+def ensure_ai_columns():
+    """为 settings 表按需添加 AI 模型配置字段（幂等迁移，兼容旧库）。"""
+    try:
+        conn = get_db()
+        cur = conn.execute("PRAGMA table_info(settings)")
+        existing = {r["name"] for r in cur.fetchall()}
+        for col in _AI_COLUMNS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE settings ADD COLUMN {col} TEXT")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+def _provider_preset(provider):
+    """各服务商的默认 Base URL 与推荐模型（OpenAI 兼容接口）。"""
+    presets = {
+        "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+        "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+        "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
+        "ollama": ("http://localhost:11434/v1", "qwen2.5:7b"),
+        "custom": ("", "gpt-4o-mini"),
+    }
+    return presets.get(provider, presets["custom"])
+
+def call_llm(prompt, settings, max_tokens=1200, temperature=0.8):
+    """调用 OpenAI 兼容接口生成文本。失败时抛异常（由调用方兜底回退模板）。
+    支持：DeepSeek / 通义千问 / OpenAI / 本地 Ollama 等任何 OpenAI 兼容端点。"""
+    import urllib.request as _ur
+    if not settings:
+        raise ValueError("no settings")
+    api_key = (settings.get("ai_api_key") or "").strip()
+    base_url = (settings.get("ai_base_url") or "").strip()
+    model = (settings.get("ai_model") or "").strip()
+    if not base_url or not model:
+        provider = settings.get("ai_provider") or "deepseek"
+        base_url, model = _provider_preset(provider)
+    if not base_url or not model:
+        raise ValueError("LLM 未正确配置")
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    headers = {"Content-Type": "application/json"}
+    if api_key and not base_url.startswith("http://localhost"):
+        headers["Authorization"] = "Bearer " + api_key
+    data = json.dumps(payload).encode("utf-8")
+    req = _ur.Request(url, data=data, headers=headers, method="POST")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with _ur.urlopen(req, timeout=45, context=ctx) as resp:
+        j = json.loads(resp.read().decode("utf-8", "ignore"))
+    return j["choices"][0]["message"]["content"].strip()
+
 def load_settings(user_id):
     conn = get_db()
     s = conn.execute("SELECT * FROM settings WHERE user_id=?", (user_id,)).fetchone()
     conn.close()
     if not s:
-        return {"demo_mode": 1, "default_interval": 5, "signature": ""}
+        return {"demo_mode": 1, "default_interval": 5, "signature": "",
+                "ai_enabled": "", "ai_provider": "deepseek", "ai_base_url": "", "ai_api_key": "", "ai_model": ""}
     return row_to_dict(s)
 
 def personalize(text, customer, sales_name):
@@ -1933,9 +2052,17 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
                 return json_resp({"ok": True})
             if path == "/api/ai/generate":
+                _settings = load_settings(uid)
+                # 测试连接：请求体可临时覆盖 AI 配置（不落库），并强制启用一次 LLM
+                if d.get("_llm_test"):
+                    _settings = dict(_settings)
+                    for _k in ("ai_enabled", "ai_provider", "ai_base_url", "ai_api_key", "ai_model"):
+                        if _k in d and d[_k] != "":
+                            _settings[_k] = d[_k]
+                    _settings["ai_enabled"] = "1"
                 subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
-                                            material_ids=d.get("material_ids"))
+                                            material_ids=d.get("material_ids"), settings=_settings)
                 return json_resp({"subject": subject, "body": body})
             if path == "/api/ai/generate-multi":
                 n = d.get("n") or 5
@@ -1943,9 +2070,10 @@ class Handler(BaseHTTPRequestHandler):
                     n = max(4, min(5, int(n)))
                 except Exception:
                     n = 5
+                _settings = load_settings(uid)
                 versions = build_email_multi(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
                                              d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
-                                             material_ids=d.get("material_ids"), n=n)
+                                             material_ids=d.get("material_ids"), n=n, settings=_settings)
                 return json_resp({"versions": versions})
             if path == "/api/ai/translate":
                 return self.translate_email(d)
@@ -2071,12 +2199,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_emails(conn, uid, u, d)
             if path == "/api/settings":
                 s = d
+                ensure_ai_columns()
                 conn.execute("""INSERT OR REPLACE INTO settings
-                    (user_id,smtp_host,smtp_port,smtp_user,smtp_pass,from_email,from_name,default_interval,demo_mode,signature)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (user_id,smtp_host,smtp_port,smtp_user,smtp_pass,from_email,from_name,default_interval,demo_mode,signature,
+                     ai_enabled,ai_provider,ai_base_url,ai_api_key,ai_model)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (uid, s.get("smtp_host"), s.get("smtp_port"), s.get("smtp_user"), s.get("smtp_pass"),
                      s.get("from_email"), s.get("from_name"), s.get("default_interval",5),
-                     s.get("demo_mode",1),                      s.get("signature")))
+                     s.get("demo_mode",1), s.get("signature"),
+                     s.get("ai_enabled", ""), s.get("ai_provider", "deepseek"),
+                     s.get("ai_base_url", ""), s.get("ai_api_key", ""), s.get("ai_model", "")))
                 conn.commit()
                 return json_resp({"ok": True})
             if path == "/api/me/change-password":
@@ -2729,6 +2861,7 @@ def main():
             cos_data_source = "local-first-boot"
         cos_download_all_uploads()
     init_db()
+    ensure_ai_columns()
     # 写启动健康度到 backup_meta（让管理员中心能展示"上次启动源"）
     try:
         c = get_db()
