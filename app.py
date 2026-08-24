@@ -1096,6 +1096,50 @@ def _strip_llm_prefix(text):
     return cleaned if cleaned else text
 
 
+def _strip_fact_duplicates(text, profile):
+    """后处理：如果 LLM 在正文里重复了事实块该展示的内容（具体日期/地点/数字等），把重复的句子删掉。
+    profile: dict，含 date_hint / city / scale / hl_uniq（亮点）
+    原则：只删除包含「明显是事实」的整句，保留其它信息。
+    """
+    import re
+    if not text:
+        return text
+    # 构造要匹配的「事实特征」
+    city = (profile.get("city") or "").strip()
+    date_h = profile.get("date_hint") or profile.get("date_text") or ""
+    scale = (profile.get("scale") or "").strip()
+    fact_patterns = []
+    # 日期：2027 年 3 月 X 日 或 X 月 X 日 至 X 日 等
+    fact_patterns.append(r"\d{4}\s*[年\-/\.]\s*\d{1,2}\s*[月\-/\.]\s*\d{1,2}\s*[日]?")
+    fact_patterns.append(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]?")
+    fact_patterns.append(r"\d{4}\s*[-\-/]\s*\d{1,2}\s*[-\-/]\s*\d{1,2}")
+    # 大数字：XX亿/XX万/XXX美元/XXXXX买家
+    fact_patterns.append(r"\d+(\.\d+)?\s*亿(美元|人民币|美金|欧)?")
+    fact_patterns.append(r"\d+(\.\d+)?\s*万[+＋]?\s*[买家客户]")
+    fact_patterns.append(r"\d+%\s*增[长速]")
+    fact_patterns.append(r"RCEP|东盟|欧盟.{0,4}法规|FCM")
+    # 城市
+    if city:
+        fact_patterns.append(re.escape(city))
+    pat = re.compile("|".join(fact_patterns))
+    # 按句子分隔（中文标点）
+    sents = re.split(r"(?<=[。！？；\n])\s*", text)
+    out = []
+    for s in sents:
+        if not s.strip():
+            out.append(s)
+            continue
+        # 包含事实特征：删
+        if pat.search(s):
+            continue
+        out.append(s)
+    result = "".join(out).strip()
+    # 避免删空
+    if len(result) < 30:
+        return text
+    return result
+
+
 def build_email_multi(exhibition, customer_type, scene, tone, custom_input, signature, uid=None, material_ids=None, n=5, settings=None):
     """一次产出 4-5 个不同角度的邮件版本（结构/侧重点明显不同）。
     网络亮点与附件要点各抓取/提取一次，避免重复请求；每个角度强制不同开场白。"""
@@ -1313,17 +1357,32 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                     _prompt += f"\n可参考的行业资讯（叙事化带入，不要列举标题）：\n{_news_txt}\n"
             _prompt += (
                 f"\n用户补充要求：{news if news else '无'}\n"
-                f"\n⚠️ 严格写作规则：\n"
-                f"1. 【禁止称呼】正文里绝对不要出现「尊敬的xxx」「您好」「Dear」等任何称呼与问候语——称呼已经由系统独立加在最上面，你只写称呼之后的内容。\n"
-                f"2. 【禁止堆砌事实】展会名称、时间、地点、亮点、规模等「事实信息」已由系统整理在邮件末尾独立展示，你在正文里只做「自然叙事化穿插」（如『本次展会将在日本千叶举办』即可），不要用列表、不要罗列数字、不要重复事实块里已有的所有信息。\n"
-                f"3. 【结构】正文只写 3 段：① 简短铺垫（1-2 句切入） ② 参展价值/理由（融入展会角度，不要列表化） ③ 行动号召（引导对方下一步）。\n"
-                f"4. 【格式】纯文本段落，不用 markdown 标题、不用 • 列表、不用 - 列项。控制在 250 字以内。\n"
-                f"5. 开篇直接进入正文内容，不要写任何邮件头（不要重复称呼、不要写展会名作为标题）。"
+                f"\n⚠️ 严格写作规则（务必遵守）：\n"
+                f"1. 【禁止称呼】正文里绝对不要出现「尊敬的xxx」「您好」「Dear」「Hi」等任何称呼与问候语——称呼已经由系统独立加在最上面，你只写称呼之后的内容。\n"
+                f"2. 【禁止重复事实】下面这些事实信息已经由系统整理在邮件末尾的【📌 展会信息】独立展示块里，正文里**绝对不要重复写**——包括：\n"
+                f"   - 展会名称（如{ex}）\n"
+                f"   - 展会具体时间（任何形如「2027年3月X日」「X月X-X日」的具体日期）\n"
+                f"   - 举办城市（如{profile.get('city') or '千叶'}等）\n"
+                f"   - 展会规模数字（如「7万+买家」「100,000 专业观众」等具体数字）\n"
+                f"   - 展会亮点中的具体数据（如「580亿美元」「28% 增长」「FCM 法规」等）\n"
+                f"   你在正文里**只用指代**——例如「本次展会」「该展」「那场展会」「既定档期」「海外买家集中的盛事」等，绝不重复列举这些数字、日期、地点。\n"
+                f"3. 【结构】正文只写 3 段：① 简短铺垫（1-2 句切入背景，引出为什么值得看这封邮件） ② 参展价值/理由（讲参展能解决什么痛点、抓住什么机会） ③ 行动号召（引导下一步：例如「我可以先发您资料」「我们可以约个15分钟电话」「我帮您锁定48小时优先选位」等）。\n"
+                f"4. 【格式】纯文本段落，不用 markdown 标题、不用 • 列表、不用 - 列项、不用 emoji 列表符号。控制在 250 字以内。\n"
+                f"5. 【语气】{tone_key}，专业招展顾问口吻，不卑不亢，避免空话套话，每段都要有信息密度。\n"
+                f"6. 开篇直接进入正文内容，第一句就开始讲故事/场景，不要写邮件头、邮件小标题、问候语。"
             )
             _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
             if _llm_body and len(_llm_body) > 30:
                 # 用 LLM 正文替换模板正文，但保留资料要点块与三要素块（确保信息完整）
                 scene_body = _strip_llm_prefix(_llm_body)
+                # 事实去重：删掉与末尾事实块重复的具体数字/日期/城市等
+                _profile_for_strip = {
+                    "city": profile.get("city"),
+                    "date_hint": profile.get("date_hint") or profile.get("date_text"),
+                    "scale": profile.get("scale"),
+                    "hl_uniq": _hl_uniq,
+                }
+                scene_body = _strip_fact_duplicates(scene_body, _profile_for_strip)
                 llm_used = True
             else:
                 llm_error = "LLM返回为空或过短"
