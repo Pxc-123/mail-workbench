@@ -2069,10 +2069,19 @@ class Handler(BaseHTTPRequestHandler):
                         if _k in d and d[_k] != "":
                             _settings[_k] = d[_k]
                     _settings["ai_enabled"] = "1"
+                # 前端传 angle_key 时按指定角度生成（用于每次点切换出差异化邮件）
+                _angle = None
+                _ak = d.get("angle_key")
+                if _ak:
+                    try:
+                        _angle = next((a for a in MULTI_ANGLES if a.get("key") == _ak), None)
+                    except Exception:
+                        _angle = None
                 subject, body, _lu, _le = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
-                                            material_ids=d.get("material_ids"), settings=_settings)
-                return json_resp({"subject": subject, "body": body, "llm_used": _lu, "llm_error": _le})
+                                            material_ids=d.get("material_ids"), angle=_angle, settings=_settings)
+                return json_resp({"subject": subject, "body": body, "llm_used": _lu, "llm_error": _le,
+                                  "angle_key": _angle.get("key") if _angle else None, "angle_label": _angle.get("label") if _angle else None})
             if path == "/api/ai/generate-multi":
                 n = d.get("n") or 5
                 try:

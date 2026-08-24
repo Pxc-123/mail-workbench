@@ -809,19 +809,26 @@ function viewGen() {
     newsBtn.disabled = false; newsBtn.textContent = "🔍 获取最新行业资讯（真实新闻）";
   };
   left.appendChild(newsBtn);
-  // 生成按钮区：AI 一键生成（自动产出 4-5 个有差异的版本）
+  // 生成按钮区：单版本（每次点换一个角度，让内容有明显差异）
   const genWrap = el("div", { style: "margin-top:14px;display:flex;flex-direction:column;gap:8px" });
   const gen = el("button", { class: "btn btn-primary btn-block" }, "⚡ AI 一键生成邮件");
   gen.onclick = async () => {
-    gen.disabled = true; gen.textContent = "⚡ 正在生成多个版本…";
+    gen.disabled = true; gen.textContent = "⚡ 正在生成…";
     try {
-      const r = await api("POST", "/api/ai/generate-multi", {
+      // 每次点带不同 angle_key（顺序轮换），让多次点击产出差异化邮件
+      const angleKeys = ["material", "news", "combo", "scale", "urgency"];
+      STATE.gen = STATE.gen || {};
+      const prevIdx = STATE.gen._angleIdx == null ? -1 : STATE.gen._angleIdx;
+      const nextIdx = (prevIdx + 1) % angleKeys.length;
+      const r = await api("POST", "/api/ai/generate", {
         exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
         custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
-        material_ids: STATE.attachments.map(a => a.id), n: 5
+        material_ids: STATE.attachments.map(a => a.id),
+        angle_key: angleKeys[nextIdx]
       });
       if (!r.ok) { toast("生成失败"); return; }
-      renderVersionCards(r.data.versions || []);
+      STATE.gen._angleIdx = nextIdx;
+      fillGenerated(r.data.subject, r.data.body, r.data.llm_used, r.data.llm_error);
     } finally {
       gen.disabled = false; gen.textContent = "⚡ AI 一键生成邮件";
     }
@@ -832,9 +839,6 @@ function viewGen() {
 
   // 右：预览编辑
   const right = el("div", { class: "preview-box" });
-  // 多版本卡片列表容器（默认隐藏，生成后显示）
-  const verCards = el("div", { id: "ver-cards", style: "display:none;margin-bottom:12px" });
-  right.appendChild(verCards);
   // 语言切换按钮
   const langBar = el("div", { style: "display:flex;gap:6px;margin-bottom:10px;align-items:center" });
   const langOpts = [
@@ -929,7 +933,7 @@ function viewGen() {
 }
 
 /** 单版本生成后填充主题/正文并记录状态 */
-function fillGenerated(subject, body) {
+function fillGenerated(subject, body, llmUsed, llmError) {
   STATE.gen = Object.assign(STATE.gen || {}, {
     exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
     customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
@@ -942,78 +946,28 @@ function fillGenerated(subject, body) {
   STATE.lang = "zh";
   updateLangButtons();
   $("#pv-subject").value = subject; $("#pv-body").value = body;
-  // 隐藏多版本标签
-  const vt = document.getElementById("ver-tabs");
-  if (vt) vt.style.display = "none";
+  // 隐藏多版本卡片列表
+  const vc = document.getElementById("ver-cards");
+  if (vc) vc.style.display = "none";
+  // 在预览区顶部显示 AI 来源徽章（让用户知道是 LLM 生成还是模板回退）
+  const badgeId = "ai-source-badge";
+  let badge = document.getElementById(badgeId);
+  if (!badge) {
+    badge = el("div", { id: badgeId, style: "margin-bottom:8px;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600" });
+    const pv = $("#pv-subject");
+    if (pv && pv.parentNode) pv.parentNode.insertBefore(badge, pv);
+  }
+  if (llmUsed) {
+    badge.style.background = "#d1fae5"; badge.style.color = "#065f46";
+    badge.textContent = "🤖 由 AI 大模型生成（智谱 GLM-4-Flash）— 点按钮可换不同角度再生成一封";
+  } else {
+    badge.style.background = "#fef3c7"; badge.style.color = "#92400e";
+    badge.textContent = "📝 模板生成" + (llmError ? "（" + llmError + "）" : "") + " — 如需 AI 大模型生成请到「管理员中心 → AI 大模型配置」开启并填 Key";
+  }
+  badge.style.display = "block";
   toast("已生成，可在右侧修改");
 }
 
-/** 多版本生成后渲染为卡片列表（每张卡片显示主题+正文摘要，点击选中并填入预览区） */
-function renderVersionCards(versions) {
-  const vc = document.getElementById("ver-cards");
-  if (!vc) return;
-  if (!versions.length) { toast("未生成任何版本"); return; }
-  vc.innerHTML = "";
-  vc.style.display = "block";
-  vc.appendChild(el("div", { class: "label", style: "margin-bottom:8px" }, "📋 已生成 " + versions.length + " 个不同版本，点击任意版本预览（保存/发送将使用当前选中版）"));
-  const list = el("div", { style: "display:flex;flex-direction:column;gap:8px" });
-  versions.forEach((v, i) => {
-    var snippet = (v.body || "").replace(/\n/g, " ").trim().slice(0, 100) + ((v.body || "").length > 100 ? "…" : "");
-    var card = el("div", {
-      class: "ver-card",
-      "data-idx": i,
-      style: "background:#fff;border:2px solid " + (i === 0 ? "#7c3aed" : "#e5e7eb") + ";border-radius:10px;padding:12px;cursor:pointer;transition:all .2s"
-    }, [
-      el("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px" }, [
-        el("span", { style: "background:" + (i === 0 ? "#7c3aed" : "#f3f4f6") + ";color:" + (i === 0 ? "#fff" : "#6b7280") + ";font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px" }, "V" + (i + 1)),
-        el("span", { style: "font-size:12px;font-weight:600;color:#7c3aed;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, v.angle || ("版本 " + (i + 1)))
-      ]),
-      el("div", { style: "font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, v.subject || "（无主题）"),
-      el("div", { style: "font-size:12px;color:#6b7280;line-height:1.5" }, snippet)
-    ]);
-    card.onclick = () => {
-      var allCards = vc.querySelectorAll(".ver-card");
-      for (var c = 0; c < allCards.length; c++) {
-        allCards[c].style.border = "2px solid #e5e7eb";
-        allCards[c].querySelector("span:first-child").style.background = "#f3f4f6";
-        allCards[c].querySelector("span:first-child").style.color = "#6b7280";
-      }
-      card.style.border = "2px solid #7c3aed";
-      card.querySelector("span:first-child").style.background = "#7c3aed";
-      card.querySelector("span:first-child").style.color = "#fff";
-      STATE.gen = Object.assign(STATE.gen || {}, {
-        exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
-        customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
-        scene: $("#cfg-sc") ? $("#cfg-sc").value : (STATE.gen && STATE.gen.scene),
-        tone: $("#cfg-tn") ? $("#cfg-tn").value : (STATE.gen && STATE.gen.tone),
-        custom: $("#cfg-custom") ? $("#cfg-custom").value : (STATE.gen && STATE.gen.custom),
-        subject: v.subject, body: v.body
-      });
-      STATE.origMail = { subject: v.subject, body: v.body };
-      STATE.lang = "zh";
-      updateLangButtons();
-      $("#pv-subject").value = v.subject; $("#pv-body").value = v.body;
-      toast("已选中 V" + (i + 1) + " · " + (v.angle || ""));
-    };
-    list.appendChild(card);
-  });
-  vc.appendChild(list);
-  // 默认选中第 1 个版本
-  var first = versions[0];
-  STATE.gen = Object.assign(STATE.gen || {}, {
-    exhibition: $("#cfg-ex") ? $("#cfg-ex").value : (STATE.gen && STATE.gen.exhibition),
-    customer_type: $("#cfg-ct") ? $("#cfg-ct").value : (STATE.gen && STATE.gen.customer_type),
-    scene: $("#cfg-sc") ? $("#cfg-sc").value : (STATE.gen && STATE.gen.scene),
-    tone: $("#cfg-tn") ? $("#cfg-tn").value : (STATE.gen && STATE.gen.tone),
-    custom: $("#cfg-custom") ? $("#cfg-custom").value : (STATE.gen && STATE.gen.custom),
-    subject: first.subject, body: first.body
-  });
-  STATE.origMail = { subject: first.subject, body: first.body };
-  STATE.lang = "zh";
-  updateLangButtons();
-  $("#pv-subject").value = first.subject; $("#pv-body").value = first.body;
-  toast("已生成 " + versions.length + " 个有差异的版本");
-}
 async function saveTemplateModal() {
   const subj = $("#pv-subject").value, body = $("#pv-body").value;
   if (!subj || !body) { toast("请先生成邮件再保存"); return; }
