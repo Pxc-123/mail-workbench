@@ -735,7 +735,7 @@ function viewGen() {
   gen.onclick = async () => {
     gen.textContent = "生成中…"; gen.disabled = true;
     const r = await api("POST", "/api/ai/generate", {
-      exhibition: exSel.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
+      exhibition: exInput.value, customer_type: ctSel.value, scene: scSel.value, tone: tnSel.value,
       custom_input: custom.value, signature: SETTINGS.signature || USER.display_name || "招展顾问",
       material_ids: STATE.attachments.map(a => a.id)
     });
@@ -837,7 +837,7 @@ function viewGen() {
   split.appendChild(right);
 
   // 自动保存：表单变化标记 dirty → 10 秒定时保存；切页/关页前兜底
-  [exSel, ctSel, scSel, tnSel].forEach(s => s.addEventListener("change", markDraftDirty));
+  [exInput, ctSel, scSel, tnSel].forEach(s => s.addEventListener("change", markDraftDirty));
   [custom, subj, body].forEach(t => t.addEventListener("input", markDraftDirty));
   ensureAutoSave();
   restoreLocalDraft();
