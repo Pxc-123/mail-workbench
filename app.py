@@ -1096,9 +1096,10 @@ def _strip_llm_prefix(text):
     return cleaned if cleaned else text
 
 
-def _strip_fact_duplicates(text, profile):
+def _strip_fact_duplicates(text, profile, protect_name=""):
     """后处理：如果 LLM 在正文里重复了事实块该展示的内容（具体日期/地点/数字等），把重复的句子删掉。
     profile: dict，含 date_hint / city / scale / hl_uniq（亮点）
+    protect_name: 展会名称。用户要求正文中保留「展会名称+展会时间」，因此包含展会名称的句子不删。
     原则：只删除包含「明显是事实」的整句，保留其它信息。
     """
     import re
@@ -1127,6 +1128,10 @@ def _strip_fact_duplicates(text, profile):
     out = []
     for s in sents:
         if not s.strip():
+            out.append(s)
+            continue
+        # 用户要求正文保留「展会名称 + 展会时间」：包含展会名称的句子不删
+        if protect_name and protect_name in s:
             out.append(s)
             continue
         # 包含事实特征：删
@@ -1359,17 +1364,13 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                 f"\n用户补充要求：{news if news else '无'}\n"
                 f"\n⚠️ 严格写作规则（务必遵守）：\n"
                 f"1. 【禁止称呼】正文里绝对不要出现「尊敬的xxx」「您好」「Dear」「Hi」等任何称呼与问候语——称呼已经由系统独立加在最上面，你只写称呼之后的内容。\n"
-                f"2. 【禁止重复事实】下面这些事实信息已经由系统整理在邮件末尾的【📌 展会信息】独立展示块里，正文里**绝对不要重复写**——包括：\n"
-                f"   - 展会名称（如{ex}）\n"
-                f"   - 展会具体时间（任何形如「2027年3月X日」「X月X-X日」的具体日期）\n"
-                f"   - 举办城市（如{profile.get('city') or '千叶'}等）\n"
-                f"   - 展会规模数字（如「7万+买家」「100,000 专业观众」等具体数字）\n"
-                f"   - 展会亮点中的具体数据（如「580亿美元」「28% 增长」「FCM 法规」等）\n"
-                f"   你在正文里**只用指代**——例如「本次展会」「该展」「那场展会」「既定档期」「海外买家集中的盛事」等，绝不重复列举这些数字、日期、地点。\n"
-                f"3. 【结构】正文只写 3 段：① 简短铺垫（1-2 句切入背景，引出为什么值得看这封邮件） ② 参展价值/理由（讲参展能解决什么痛点、抓住什么机会） ③ 行动号召（引导下一步：例如「我可以先发您资料」「我们可以约个15分钟电话」「我帮您锁定48小时优先选位」等）。\n"
-                f"4. 【格式】纯文本段落，不用 markdown 标题、不用 • 列表、不用 - 列项、不用 emoji 列表符号。控制在 250 字以内。\n"
-                f"5. 【语气】{tone_key}，专业招展顾问口吻，不卑不亢，避免空话套话，每段都要有信息密度。\n"
-                f"6. 开篇直接进入正文内容，第一句就开始讲故事/场景，不要写邮件头、邮件小标题、问候语。"
+                f"2. 【必含要素】正文里必须自然提到展会名称「{ex}」和展会时间「{_normalize_date_text(profile.get('date_hint') or profile.get('date_text') or '待定')}」各至少 1 次（各 1 次即可，不要反复强调）。这是收件人唯一需要在正文中看到的硬信息。\n"
+                f"3. 【不重复其他事实】除展会名称与展会时间外，以下事实已经由系统整理在邮件末尾的【📌 展会信息】独立展示块里，正文里**绝对不要重复列举**——包括：举办城市（如{profile.get('city') or '千叶'}）、展会规模数字（如「7万+买家」「100,000 专业观众」）、亮点中的具体数据（如「580亿美元」「28% 增长」「FCM 法规」）等。正文只用指代，例如「该展」「既定档期」「海外买家集中的盛事」。\n"
+                f"4. 【资料化用】下面提供的展会资料要点，请先理解内容，再用你自己的话自然改写融入正文（变通表达，突出对企业有用的信息），**绝对不要整段原样复制粘贴、不要直接列举原文**。\n"
+                f"5. 【结构】正文只写 3 段：① 简短铺垫（1-2 句切入背景，引出为什么值得看这封邮件） ② 参展价值/理由（讲参展能解决什么痛点、抓住什么机会） ③ 行动号召（引导下一步：例如「我可以先发您资料」「我们可以约个15分钟电话」「我帮您锁定48小时优先选位」等）。\n"
+                f"6. 【格式】纯文本段落，不用 markdown 标题、不用 • 列表、不用 - 列项、不用 emoji 列表符号。控制在 250 字以内。\n"
+                f"7. 【语气】{tone_key}，专业招展顾问口吻，不卑不亢，避免空话套话，每段都要有信息密度。\n"
+                f"8. 开篇直接进入正文内容，第一句就开始讲故事/场景，不要写邮件头、邮件小标题、问候语。"
             )
             _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
             if _llm_body and len(_llm_body) > 30:
@@ -1382,9 +1383,11 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                     "scale": profile.get("scale"),
                     "hl_uniq": _hl_uniq,
                 }
-                scene_body = _strip_fact_duplicates(scene_body, _profile_for_strip)
+                scene_body = _strip_fact_duplicates(scene_body, _profile_for_strip, protect_name=ex)
                 # 确保 scene_body 末尾换行，与后面事实块/资料块隔开
                 scene_body = scene_body.rstrip() + "\n\n"
+                # AI 已把资料要点自然化用进正文，不再在末尾挂大段原文块（避免冗长堆砌）
+                mat_block = ""
                 llm_used = True
             else:
                 llm_error = "LLM返回为空或过短"
