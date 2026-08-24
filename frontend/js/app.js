@@ -895,14 +895,7 @@ function viewGen() {
   varSel.onchange = doVarReplace;
   // 缓存客户列表供替换使用
   api("GET", "/api/customers").then(r => { window._allCustomersForVar = r.data || []; });
-  // 生成后自动触发一次替换预览
-  const origGenClick = gen.onclick;
-  gen.onclick = async (...a) => {
-    await origGenClick(...a);
-    setTimeout(doVarReplace, 200);
-    if (varSel.options.length > 1) varSel.selectedIndex = 1;
-  };
-  // 多版本生成后也自动触发变量替换预览
+  // 生成后自动触发变量替换预览
   const origGenClick = gen.onclick;
   gen.onclick = async (...a) => {
     await origGenClick(...a);
