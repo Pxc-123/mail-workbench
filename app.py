@@ -1383,6 +1383,8 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                     "hl_uniq": _hl_uniq,
                 }
                 scene_body = _strip_fact_duplicates(scene_body, _profile_for_strip)
+                # 确保 scene_body 末尾换行，与后面事实块/资料块隔开
+                scene_body = scene_body.rstrip() + "\n\n"
                 llm_used = True
             else:
                 llm_error = "LLM返回为空或过短"
