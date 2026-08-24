@@ -1,0 +1,2 @@
+# Force Unix line endings for Dockerfile - CloudBase Linux build needs this
+Dockerfile text eol=lf
