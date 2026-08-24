@@ -1245,6 +1245,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     # ---- 真实大模型生成分支（可配置）：启用后用 LLM 产出正文，失败自动回退模板 ----
     llm_used = False
     ai_on = bool(settings and str(settings.get("ai_enabled", "")) in ("1", "true", "True"))
+    print(f"[AI-LLM-DEBUG] ai_on={ai_on} settings_keys={list(settings.keys()) if settings else 'None'} api_key_len={len(settings.get('ai_api_key','')) if settings else 0}", flush=True)
     if ai_on and not settings.get("ai_api_key") == "__skip__":
         try:
             _angle_desc = ""
