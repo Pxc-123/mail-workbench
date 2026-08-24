@@ -1379,6 +1379,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- 管理员接口 ----------------
     def admin_get(self, path, admin):
+        import os as _os
         if path == "/api/admin/users":
             conn = get_db()
             rows = conn.execute("SELECT id,username,display_name,role,created_at FROM users ORDER BY id").fetchall()
@@ -1420,7 +1421,6 @@ class Handler(BaseHTTPRequestHandler):
             }, data
         if path == "/api/admin/backup/status":
             # 部署稳定性：返回数据健康度，供管理员中心展示
-            import os as _os
             db_size = _os.path.getsize(DB_PATH) if _os.path.exists(DB_PATH) else 0
             upload_count, upload_bytes = 0, 0
             if _os.path.isdir(UPLOAD_DIR):
