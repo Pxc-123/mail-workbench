@@ -653,66 +653,62 @@ async function openDraftsPanel() {
 
 /* ---------- 展会资料自动关联 ---------- */
 /** 根据展会名称自动加载该展会绑定的资料附件到 STATE.attachments */
-async function autoLoadExMaterials(exName) {
-  const hint = $("#ex-mat-hint");
-  if (!hint || !exName?.trim()) { if (hint) { hint.style.display = "none"; } return; }
+function autoLoadExMaterials(exName) {
+  var hint = document.getElementById("ex-mat-hint");
+  if (!hint || !exName || !exName.trim()) { if (hint) hint.style.display = "none"; return; }
   hint.style.display = "block";
   hint.style.background = "#eff6ff";
   hint.style.border = "1px solid #93c5fd";
   hint.style.color = "#1e40af";
-  hint.innerHTML = "⏳ 正在查找展会资料…";
-  try {
-    // 从缓存或接口获取完整展会列表（含 id）
-    const exs = await getExhibitions();
-    const match = exs.find(e => e.name === exName.trim());
+  hint.innerHTML = "\u23f3 \u6b63\u5728\u67e5\u627e\u5c55\u4f1a\u8d44\u6599\u2026";
+  getExhibitions().then(function(exs) {
+    var match = null;
+    for (var i = 0; i < exs.length; i++) { if (exs[i].name === exName.trim()) { match = exs[i]; break; } }
     if (!match) {
-      hint.style.background = "#fefce8";
-      hint.style.border = "1px solid #fde047";
-      hint.style.color = "#854d0e";
-      hint.innerHTML = `⚠️ 「${esc(exName)}」未在展会库中找到（可去「展会管理」新建）`;
+      hint.style.background = "#fefce8"; hint.style.border = "1px solid #fde047"; hint.style.color = "#854d0e";
+      hint.innerHTML = "\u26a0\ufe0f \u300c" + esc(exName) + "\u300d\u672a\u5728\u5c55\u4f1a\u5e93\u4e2d\u627e\u5230\uff08\u53ef\u53bb\u300c\u5c55\u4f1a\u7ba1\u7406\u300d\u65b0\u5efa\uff09";
       return;
     }
-    // 查询该展会的资料
-    const r = await api("GET", "/api/materials");
-    const mats = (r.data || []).filter(m => Number(m.exhibition_id) === Number(match.id));
-    if (!mats.length) {
-      hint.style.background = "#f5f5f5";
-      hint.style.border = "1px solid #d1d5db";
-      hint.style.color = "#6b7280";
-      hint.innerHTML = `📎 该展会暂无绑定资料（可在「资料库」上传时选择所属展会）`;
-      // 清除之前自动加载的展会资料（保留手动添加的）
-      STATE.attachments = STATE.attachments.filter(a => a._source !== "auto_ex");
-      updateAttInfo();
-      return;
-    }
-    // 合并：去掉旧的自动来源，加入新的
-    STATE.attachments = STATE.attachments.filter(a => a._source !== "auto_ex");
-    mats.forEach(m => {
-      if (!STATE.attachments.find(a => a.id === m.id)) {
-        STATE.attachments.push({ id: m.id, name: m.name, _source: "auto_ex" });
+    api("GET", "/api/materials").then(function(r) {
+      var mats = [];
+      var data = r.data || [];
+      for (var j = 0; j < data.length; j++) { if (Number(data[j].exhibition_id) === Number(match.id)) mats.push(data[j]); }
+      if (!mats.length) {
+        hint.style.background = "#f5f5f5"; hint.style.border = "1px solid #d1d5db"; hint.style.color = "#6b7280";
+        hint.innerHTML = "\ud83d\udcce \u8be5\u5c55\u4f1a\u6682\u65e0\u7ed1\u5b9a\u8d44\u6599\uff08\u53ef\u5728\u300c\u8d44\u6599\u5e93\u300d\u4e0a\u4f20\u65f6\u9009\u62e9\u6240\u5c5e\u5c55\u4f1a\uff09";
+        var filtered = [];
+        for (var k = 0; k < STATE.attachments.length; k++) { if (STATE.attachments[k]._source !== "auto_ex") filtered.push(STATE.attachments[k]); }
+        STATE.attachments = filtered;
+        updateAttInfo();
+        return;
       }
+      var filtered2 = [];
+      for (var m = 0; m < STATE.attachments.length; m++) { if (STATE.attachments[m]._source !== "auto_ex") filtered2.push(STATE.attachments[m]); }
+      STATE.attachments = filtered2;
+      for (var n = 0; n < mats.length; n++) {
+        var found = false;
+        for (var p = 0; p < STATE.attachments.length; p++) { if (STATE.attachments[p].id === mats[n].id) { found = true; break; } }
+        if (!found) STATE.attachments.push({ id: mats[n].id, name: mats[n].name, _source: "auto_ex" });
+      }
+      var names = [];
+      for (var q = 0; q < mats.length; q++) names.push(esc(mats[q].name));
+      hint.style.background = "#ecfdf5"; hint.style.border = "1px solid #86efac"; hint.style.color = "#166534";
+      hint.innerHTML = "\u2705 \u5df2\u81ea\u52a8\u52a0\u8f7d <b>" + mats.length + "</b> \u4e2a\u5c55\u4f1a\u8d44\u6599\uff1a" + names.join("\u3001") + "<br><span style=\"color:#15803d;font-size:11px\">\ud83d\udca1 AI \u751f\u6210\u90ae\u4ef6\u65f6\u5c06\u4e3b\u8981\u57fa\u4e8e\u8fd9\u4e9b\u8d44\u6599\u5185\u5bb9</span>";
+      updateAttInfo();
+      markDraftDirty();
+    }).catch(function(e) {
+      hint.style.background = "#fef2f2"; hint.style.border = "1px solid #fca5a5"; hint.style.color = "#991b1b";
+      hint.innerHTML = "\u26a0\ufe0f \u52a0\u8f7d\u5c55\u4f1a\u8d44\u6599\u5931\u8d25\uff1a" + esc(e.message);
     });
-    // 更新提示
-    hint.style.background = "#ecfdf5";
-    hint.style.border = "1px solid #86efac";
-    hint.style.color = "#166534";
-    hint.innerHTML = `✅ 已自动加载 <b>${mats.length}</b> 个展会资料：${mats.map(m => esc(m.name)).join("、")}<br><span style="color:#15803d;font-size:11px">💡 AI 生成邮件时将主要基于这些资料内容</span>`;
-    updateAttInfo();
-    markDraftDirty();
-  } catch(e) {
-    hint.style.background = "#fef2f2";
-    hint.style.border = "1px solid #fca5a5";
-    hint.style.color = "#991b1b";
-    hint.innerHTML = "⚠️ 加载展会资料失败：" + esc(e.message);
-  }
+  }).catch(function() {});
 }
 
 function updateAttInfo() {
-  const el = $("#att-info");
+  var el = document.getElementById("att-info");
   if (!el) return;
-  el.textContent = STATE.attachments.length
-    ? "当前附件：" + STATE.attachments.map(a => a.name).join("、")
-    : "当前附件：无";
+  var names = [];
+  for (var i = 0; i < STATE.attachments.length; i++) names.push(STATE.attachments[i].name);
+  el.textContent = names.length ? "\u5f53\u524d\u9644\u4ef6\uff1a" + names.join("\u3001") : "\u5f53\u524d\u9644\u4ef6\uff1a\u65e0";
 }
 
 function viewGen() {
@@ -750,20 +746,20 @@ function viewGen() {
     if (STATE.gen.exhibition && exs.some(e => e.name === STATE.gen.exhibition)) exInput.value = STATE.gen.exhibition;
     else if (exs.length && !exInput.value) { exInput.value = exs[0].name; STATE.gen.exhibition = exs[0].name; }
     // 进入页面时也触发一次资料关联
-    autoLoadExMaterials(exInput.value);
+    if (typeof autoLoadExMaterials === "function") autoLoadExMaterials(exInput.value);
   });
   // 选择/输入展会名称后，自动关联该展会的资料附件
-  let _exMatTimer = null;
-  exInput.addEventListener("input", () => {
+  var _exMatTimer = null;
+  exInput.addEventListener("input", function() {
     clearTimeout(_exMatTimer);
-    _exMatTimer = setTimeout(() => {
+    _exMatTimer = setTimeout(function() {
       STATE.gen.exhibition = exInput.value;
-      autoLoadExMaterials(exInput.value);
+      if (typeof autoLoadExMaterials === "function") autoLoadExMaterials(exInput.value);
     }, 400);
   });
-  exInput.addEventListener("change", () => {
+  exInput.addEventListener("change", function() {
     STATE.gen.exhibition = exInput.value;
-    autoLoadExMaterials(exInput.value);
+    if (typeof autoLoadExMaterials === "function") autoLoadExMaterials(exInput.value);
   });
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
   const ctSel = el("select", { class: "inp", id: "cfg-ct" }, [el("option", { value: "" }, "加载中…")]);
