@@ -1069,12 +1069,12 @@ def build_email_multi(exhibition, customer_type, scene, tone, custom_input, sign
         ang = dict(ang)
         if i < len(OPENING_VARIANTS):
             ang["opening"] = OPENING_VARIANTS[i]
-        subj, body = build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid,
+        subj, body, _lu, _le = build_email(exhibition, customer_type, scene, tone, custom_input, signature, uid,
                                  material_ids=material_ids, angle=ang,
                                  prefetched_news=prefetched_news, prefetched_material_summary=prefetched_material,
                                  settings=settings)
         versions.append({"index": i + 1, "angle": ang.get("label"), "angle_key": ang.get("key"),
-                         "subject": subj, "body": body})
+                         "subject": subj, "body": body, "llm_used": _lu, "llm_error": _le})
     return versions
 
 
@@ -1244,8 +1244,8 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
 
     # ---- 真实大模型生成分支（可配置）：启用后用 LLM 产出正文，失败自动回退模板 ----
     llm_used = False
+    llm_error = None
     ai_on = bool(settings and str(settings.get("ai_enabled", "")) in ("1", "true", "True"))
-    print(f"[AI-LLM-DEBUG] ai_on={ai_on} settings_keys={list(settings.keys()) if settings else 'None'} api_key_len={len(settings.get('ai_api_key','')) if settings else 0}", flush=True)
     if ai_on and not settings.get("ai_api_key") == "__skip__":
         try:
             _angle_desc = ""
@@ -1275,16 +1275,16 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                 f"不要使用 markdown 标题，用纯文本段落。控制在 350 字以内。称呼用「尊敬的 {{联系人姓名}}（{{客户名称}}）：」占位。"
             )
             _llm_body = call_llm(_prompt, settings, max_tokens=900, temperature=0.9)
-            print(f"[AI-LLM] 返回长度={len(_llm_body) if _llm_body else 0}, 前50字={(_llm_body or '')[:50]}", flush=True)
             if _llm_body and len(_llm_body) > 30:
                 # 用 LLM 正文替换模板正文，但保留资料要点块与三要素块（确保信息完整）
                 scene_body = _llm_body
                 llm_used = True
+            else:
+                llm_error = "LLM返回为空或过短"
         except Exception as _e:
             # 调用失败：静默回退到模板生成，不影响出信
-            import traceback
-            print(f"[AI-LLM] 大模型调用失败: {type(_e).__name__}: {_e}", flush=True)
-            print(traceback.format_exc(), flush=True)
+            llm_error = f"{type(_e).__name__}: {_e}"
+            print(f"[AI-LLM] 大模型调用失败: {llm_error}", flush=True)
 
     body = f"{salutation}\n\n{scene_body}{mat_block}{ex_facts_block}\n\n— {signature or '{销售姓名}'}｜{ex} 招展团队"
 
@@ -1302,7 +1302,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
             "7": f"【感谢】感谢关注 {ex}，后续资源持续开放",
         }
         subject = subject_map[scene_key]
-    return subject, body
+    return subject, body, llm_used, llm_error
 
 # ---------------------------- AI 大模型（可配置，真实调用） ----------------------------
 _AI_COLUMNS = ["ai_enabled", "ai_provider", "ai_base_url", "ai_api_key", "ai_model"]
@@ -2065,10 +2065,10 @@ class Handler(BaseHTTPRequestHandler):
                         if _k in d and d[_k] != "":
                             _settings[_k] = d[_k]
                     _settings["ai_enabled"] = "1"
-                subject, body = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
+                subject, body, _lu, _le = build_email(d.get("exhibition"), d.get("customer_type"), d.get("scene"),
                                             d.get("tone"), d.get("custom_input"), d.get("signature"), uid,
                                             material_ids=d.get("material_ids"), settings=_settings)
-                return json_resp({"subject": subject, "body": body})
+                return json_resp({"subject": subject, "body": body, "llm_used": _lu, "llm_error": _le})
             if path == "/api/ai/generate-multi":
                 n = d.get("n") or 5
                 try:
