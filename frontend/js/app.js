@@ -3,10 +3,20 @@ const API = "";
 let TOKEN = localStorage.getItem("wb_token");
 let USER = JSON.parse(localStorage.getItem("wb_user") || "null");
 let SETTINGS = {};
+/* 日历悬浮面板里的"展会档期标签"默认关闭 —— 用户反馈整月重复展示易误读；
+   如需启用，把 false 改 true，或在浮窗顶部的小开关里勾上。
+   档期跨度上限：超过该天数的展会不再展开（防御 date_text 异常）。 */
+const CAL_PREFS_DEFAULT = { showExpos: false, maxSpanDays: 60 };
+function _loadCalPrefs() {
+  try { const s = JSON.parse(localStorage.getItem("wb_cal_prefs") || "null"); return Object.assign({}, CAL_PREFS_DEFAULT, s || {}); }
+  catch { return Object.assign({}, CAL_PREFS_DEFAULT); }
+}
+function _saveCalPrefs() { try { localStorage.setItem("wb_cal_prefs", JSON.stringify(STATE.calPrefs)); } catch {} }
 const STATE = {
   view: "home", sub: "todos",
   calYear: new Date().getFullYear(), calMonth: new Date().getMonth(),
   selectedDate: null,
+  calPrefs: _loadCalPrefs(), // { showExpos, maxSpanDays }，从 localStorage 反序列化
   gen: { exhibition: "", customer_type: "", scene: "", tone: "", custom: "", subject: "", body: "" },
   attachments: [], // [{id,name}]
   lang: "zh", // 邮件语言: zh / bilingual / en
@@ -425,6 +435,31 @@ function calendarPanel(floating) {
   next.onclick = () => { STATE.calMonth++; if (STATE.calMonth > 11) { STATE.calMonth = 0; STATE.calYear++; } box.replaceWith(calendarPanel(floating)); };
   head.appendChild(prev); head.appendChild(label); head.appendChild(next);
   box.appendChild(head);
+
+  // 顶部小开关：手动控制"是否在日历里显示展会档期标签"
+  const opts = el("div", { class: "cal-opts" });
+  const expoSwitch = el("label", { class: "cal-switch" });
+  const expoChk = el("input", { type: "checkbox" });
+  expoChk.checked = !!STATE.calPrefs.showExpos;
+  expoChk.onchange = () => { STATE.calPrefs.showExpos = expoChk.checked; _saveCalPrefs(); box.replaceWith(calendarPanel(floating)); };
+  expoSwitch.appendChild(expoChk);
+  expoSwitch.appendChild(el("span", {}, "显示展会档期"));
+  opts.appendChild(expoSwitch);
+  const spanBox = el("label", { class: "cal-switch" });
+  spanBox.appendChild(el("span", {}, "档期最多展开 "));
+  const spanInput = el("input", { type: "number", min: "1", max: "365", value: String(STATE.calPrefs.maxSpanDays || 60) });
+  spanInput.style.width = "60px";
+  spanInput.onchange = () => {
+    const v = parseInt(spanInput.value, 10);
+    STATE.calPrefs.maxSpanDays = (Number.isFinite(v) && v > 0) ? Math.min(v, 365) : 60;
+    _saveCalPrefs();
+    box.replaceWith(calendarPanel(floating));
+  };
+  spanBox.appendChild(spanInput);
+  spanBox.appendChild(el("span", {}, " 天"));
+  opts.appendChild(spanBox);
+  box.appendChild(opts);
+
   const grid = el("div", { class: "cal-grid" });
   ["日", "一", "二", "三", "四", "五", "六"].forEach(d => grid.appendChild(el("div", { class: "cal-dow" }, d)));
   const first = new Date(STATE.calYear, STATE.calMonth, 1).getDay();
@@ -439,18 +474,26 @@ function calendarPanel(floating) {
       const todoMap = {};
       const expoMap = {};
       todos.forEach(t => { if (t.bind_date) (todoMap[t.bind_date] = todoMap[t.bind_date] || []).push(t); });
-      // 展会映射到日期
-      expos.forEach(e => {
-        const dates = parseExhibitionDates(e.date_text, STATE.calYear);
-        if (dates) {
-          expandDateRange(dates.start, dates.end).forEach(ds => {
+      // 展会映射到日期 —— 仅在用户开启开关时执行
+      if (STATE.calPrefs.showExpos) {
+        const maxSpan = Number(STATE.calPrefs.maxSpanDays) || 60;
+        expos.forEach(e => {
+          const dates = parseExhibitionDates(e.date_text, STATE.calYear);
+          if (!dates) return;
+          const dsList = expandDateRange(dates.start, dates.end);
+          // 防御：跨度超过上限就不再展开（避免 date_text 异常时整月都被点亮）
+          if (dsList.length > maxSpan) {
+            console.warn("[日历] 展会档期跨度超限，已跳过：", e.name, dsList.length, "天 >", maxSpan);
+            return;
+          }
+          dsList.forEach(ds => {
             const [ey, em] = ds.split('-').map(Number);
             if (ey === STATE.calYear && em === STATE.calMonth + 1) {
               (expoMap[ds] = expoMap[ds] || []).push(e);
             }
           });
-        }
-      });
+        });
+      }
       _renderCalCells(grid, first, days, todoMap, expoMap, floating);
     } catch (innerErr) {
       console.error("日历渲染异常:", innerErr);
@@ -508,7 +551,7 @@ function todayStr() { const n = new Date(); return `${n.getFullYear()}-${String(
 function viewCalendar() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "悬浮日历"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "橙色标签 = 展会管理中的展会档期；蓝色标签 = 已绑定的待办事项"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "蓝色标签 = 已绑定的待办事项；橙色展会档期标签默认关闭，按需在上方开关里打开。"));
   wrap.appendChild(calendarPanel(false));
   return wrap;
 }
