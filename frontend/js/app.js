@@ -197,7 +197,7 @@ function render() {
 function viewHome() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "首页工作台"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "待办事项提醒 · 悬浮日历可把待办绑定到具体日期"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "待办事项提醒 · 日历自动展示展会管理中的展会档期"));
   const grid = el("div", { class: "grid2" });
   grid.appendChild(card("📋 今日待办", todoPanel()));
   grid.appendChild(card("📅 日历 / 绑定待办", calendarPanel(false)));
@@ -337,6 +337,80 @@ async function loadTodos(target) {
     target.appendChild(item);
   });
 }
+/* 解析展会档期字符串 → {start: "YYYY-MM-DD", end: "YYYY-MM-DD"} 或 null */
+function parseExhibitionDates(dateText, yearHint) {
+  if (!dateText || /待定|TBD|待确认|未确定|未定档/.test(dateText)) return null;
+  const text = dateText.trim();
+  const year = yearHint || new Date().getFullYear();
+  let m;
+
+  // 1. 2026-08-12 ~ 08-15  或  2026-08-12 ~ 2026-08-15
+  m = text.match(/(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})\s*[~至到]\s*(\d{4})?[-.\/](\d{1,2})[-.\/](\d{1,2})/);
+  if (m) {
+    const y1 = m[1], m1 = String(m[2]).padStart(2, '0'), d1 = String(m[3]).padStart(2, '0');
+    const y2 = m[4] || y1, m2 = String(m[5]).padStart(2, '0'), d2 = String(m[6]).padStart(2, '0');
+    return { start: `${y1}-${m1}-${d1}`, end: `${y2}-${m2}-${d2}` };
+  }
+
+  // 2. 2026年8月13-15日  /  2026年8月13至15日  /  2026.08.13~15
+  m = text.match(/(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})\s*[~至到-]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const y = m[1], mth = String(m[2]).padStart(2, '0'), d1 = String(m[3]).padStart(2, '0'), d2 = String(m[4]).padStart(2, '0');
+    return { start: `${y}-${mth}-${d1}`, end: `${y}-${mth}-${d2}` };
+  }
+  m = text.match(/(\d{4})[年]\s*(\d{1,2})[月]\s*(\d{1,2})\s*[~至到-]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const y = m[1], mth = String(m[2]).padStart(2, '0'), d1 = String(m[3]).padStart(2, '0'), d2 = String(m[4]).padStart(2, '0');
+    return { start: `${y}-${mth}-${d1}`, end: `${y}-${mth}-${d2}` };
+  }
+
+  // 3. 2026-08-13  /  2026年8月13日  /  2026.08.13
+  m = text.match(/(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})/);
+  if (m) {
+    const y = m[1], mth = String(m[2]).padStart(2, '0'), d = String(m[3]).padStart(2, '0');
+    return { start: `${y}-${mth}-${d}`, end: `${y}-${mth}-${d}` };
+  }
+  m = text.match(/(\d{4})[年]\s*(\d{1,2})[月]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const y = m[1], mth = String(m[2]).padStart(2, '0'), d = String(m[3]).padStart(2, '0');
+    return { start: `${y}-${mth}-${d}`, end: `${y}-${mth}-${d}` };
+  }
+
+  // 4. 8月13-15日（无年份）
+  m = text.match(/(\d{1,2})[月]\s*(\d{1,2})\s*[~至到-]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const mth = String(m[1]).padStart(2, '0'), d1 = String(m[2]).padStart(2, '0'), d2 = String(m[3]).padStart(2, '0');
+    return { start: `${year}-${mth}-${d1}`, end: `${year}-${mth}-${d2}` };
+  }
+
+  // 5. 8月13日（无年份）
+  m = text.match(/(\d{1,2})[月]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const mth = String(m[1]).padStart(2, '0'), d = String(m[2]).padStart(2, '0');
+    return { start: `${year}-${mth}-${d}`, end: `${year}-${mth}-${d}` };
+  }
+
+  return null;
+}
+
+/* 展开日期范围 → ["YYYY-MM-DD", ...] */
+function expandDateRange(startStr, endStr) {
+  const [sy, sm, sd] = startStr.split('-').map(Number);
+  const [ey, em, ed] = endStr.split('-').map(Number);
+  const dates = [];
+  let y = sy, m = sm, d = sd;
+  while (true) {
+    const ds = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    dates.push(ds);
+    if (y === ey && m === em && d === ed) break;
+    d++;
+    const daysInMonth = new Date(y, m, 0).getDate();
+    if (d > daysInMonth) { d = 1; m++; }
+    if (m > 12) { m = 1; y++; }
+  }
+  return dates;
+}
+
 function calendarPanel(floating) {
   const box = el("div", { class: "cal" });
   const head = el("div", { class: "cal-head" });
@@ -351,18 +425,43 @@ function calendarPanel(floating) {
   ["日", "一", "二", "三", "四", "五", "六"].forEach(d => grid.appendChild(el("div", { class: "cal-dow" }, d)));
   const first = new Date(STATE.calYear, STATE.calMonth, 1).getDay();
   const days = new Date(STATE.calYear, STATE.calMonth + 1, 0).getDate();
-  api("GET", "/api/todos").then(r => {
-    const todos = r.data || [];
-    const map = {};
-    todos.forEach(t => { if (t.bind_date) (map[t.bind_date] = map[t.bind_date] || []).push(t); });
+  Promise.all([api("GET", "/api/todos"), api("GET", "/api/exhibitions")]).then(([todoR, expoR]) => {
+    const todos = todoR.data || [];
+    const expos = expoR.data || [];
+    const todoMap = {};
+    const expoMap = {};
+    todos.forEach(t => { if (t.bind_date) (todoMap[t.bind_date] = todoMap[t.bind_date] || []).push(t); });
+    // 展会映射到日期
+    expos.forEach(e => {
+      const dates = parseExhibitionDates(e.date_text, STATE.calYear);
+      if (dates) {
+        expandDateRange(dates.start, dates.end).forEach(ds => {
+          const [ey, em] = ds.split('-').map(Number);
+          if (ey === STATE.calYear && em === STATE.calMonth + 1) {
+            (expoMap[ds] = expoMap[ds] || []).push(e);
+          }
+        });
+      }
+    });
     for (let i = 0; i < first; i++) grid.appendChild(el("div"));
     for (let d = 1; d <= days; d++) {
       const ds = `${STATE.calYear}-${String(STATE.calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
       const cell = el("div", { class: "cal-cell" + (STATE.selectedDate === ds ? " sel" : "") + (ds === todayStr() ? " today" : "") });
       cell.appendChild(el("span", { class: "num" }, String(d)));
-      if (map[ds]) {
+      // 展会标签（先显示，更醒目）
+      if (expoMap[ds]) {
+        const expoList = el("div", { class: "cal-expos" });
+        expoMap[ds].forEach(e => {
+          const ei = el("div", { class: "cal-expo" }, e.name);
+          ei.title = `${e.name} · ${e.city || ''} · ${e.date_text || ''}`;
+          expoList.appendChild(ei);
+        });
+        cell.appendChild(expoList);
+      }
+      // 待办标签
+      if (todoMap[ds]) {
         const todoList = el("div", { class: "cal-todos" });
-        map[ds].forEach(t => {
+        todoMap[ds].forEach(t => {
           const ti = el("div", { class: "cal-todo" + (t.done ? " done" : "") }, t.title);
           if (!t.done) {
             const priColor = t.priority === "高" ? "#dc2626" : t.priority === "中" ? "#d97706" : "#6b7280";
@@ -390,7 +489,7 @@ function todayStr() { const n = new Date(); return `${n.getFullYear()}-${String(
 function viewCalendar() {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "section-title" }, "悬浮日历"));
-  wrap.appendChild(el("div", { class: "section-sub" }, "点击日期可将待办绑定到该日；右下角悬浮按钮可随时唤出日历"));
+  wrap.appendChild(el("div", { class: "section-sub" }, "橙色标签 = 展会管理中的展会档期；蓝色标签 = 已绑定的待办事项"));
   wrap.appendChild(calendarPanel(false));
   return wrap;
 }
