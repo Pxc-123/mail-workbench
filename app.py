@@ -1634,7 +1634,13 @@ class Handler(BaseHTTPRequestHandler):
             ctype = ctype or "application/octet-stream"
         with open(fp, "rb") as f:
             data = f.read()
-        self._send(200, {"Content-Type": ctype + "; charset=utf-8"}, data)
+        # 关键：静态资源不缓存，避免用户浏览器一直用旧版 JS/CSS（改版后不刷新就看不到新功能）
+        self._send(200, {
+            "Content-Type": ctype + "; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }, data)
 
     # ---------------- GET API ----------------
     def route_get(self, path):
