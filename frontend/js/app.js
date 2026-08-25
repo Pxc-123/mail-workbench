@@ -339,7 +339,8 @@ async function loadTodos(target) {
 }
 /* 解析展会档期字符串 → {start: "YYYY-MM-DD", end: "YYYY-MM-DD"} 或 null */
 function parseExhibitionDates(dateText, yearHint) {
-  if (!dateText || /待定|TBD|待确认|未确定|未定档/.test(dateText)) return null;
+  if (!dateText || typeof dateText !== 'string') return null;
+  if (/待定|TBD|待确认|未确定|未定档/.test(dateText)) return null;
   const text = dateText.trim();
   const year = yearHint || new Date().getFullYear();
   let m;
@@ -397,9 +398,12 @@ function parseExhibitionDates(dateText, yearHint) {
 function expandDateRange(startStr, endStr) {
   const [sy, sm, sd] = startStr.split('-').map(Number);
   const [ey, em, ed] = endStr.split('-').map(Number);
+  if ([sy, sm, sd, ey, em, ed].some(v => !Number.isFinite(v))) return []; // 无效输入直接返回空
   const dates = [];
   let y = sy, m = sm, d = sd;
+  let guard = 0;
   while (true) {
+    if (++guard > 1000) { console.error("expandDateRange 防死循环中断:", startStr, endStr); break; }
     const ds = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     dates.push(ds);
     if (y === ey && m === em && d === ed) break;
@@ -425,30 +429,39 @@ function calendarPanel(floating) {
   ["日", "一", "二", "三", "四", "五", "六"].forEach(d => grid.appendChild(el("div", { class: "cal-dow" }, d)));
   const first = new Date(STATE.calYear, STATE.calMonth, 1).getDay();
   const days = new Date(STATE.calYear, STATE.calMonth + 1, 0).getDate();
+  // 同步保底渲染空日历（无论 API 成功/失败/异常，日期格子始终存在）
+  _renderCalCells(grid, first, days, {}, {}, floating);
+
   Promise.all([api("GET", "/api/todos"), api("GET", "/api/exhibitions")]).then(([todoR, expoR]) => {
-    const todos = todoR.data || [];
-    const expos = expoR.data || [];
-    const todoMap = {};
-    const expoMap = {};
-    todos.forEach(t => { if (t.bind_date) (todoMap[t.bind_date] = todoMap[t.bind_date] || []).push(t); });
-    // 展会映射到日期
-    expos.forEach(e => {
-      const dates = parseExhibitionDates(e.date_text, STATE.calYear);
-      if (dates) {
-        expandDateRange(dates.start, dates.end).forEach(ds => {
-          const [ey, em] = ds.split('-').map(Number);
-          if (ey === STATE.calYear && em === STATE.calMonth + 1) {
-            (expoMap[ds] = expoMap[ds] || []).push(e);
-          }
-        });
-      }
-    });
-    _renderCalCells(grid, first, days, todoMap, expoMap, floating);
+    try {
+      const todos = todoR.data || [];
+      const expos = expoR.data || [];
+      const todoMap = {};
+      const expoMap = {};
+      todos.forEach(t => { if (t.bind_date) (todoMap[t.bind_date] = todoMap[t.bind_date] || []).push(t); });
+      // 展会映射到日期
+      expos.forEach(e => {
+        const dates = parseExhibitionDates(e.date_text, STATE.calYear);
+        if (dates) {
+          expandDateRange(dates.start, dates.end).forEach(ds => {
+            const [ey, em] = ds.split('-').map(Number);
+            if (ey === STATE.calYear && em === STATE.calMonth + 1) {
+              (expoMap[ds] = expoMap[ds] || []).push(e);
+            }
+          });
+        }
+      });
+      _renderCalCells(grid, first, days, todoMap, expoMap, floating);
+    } catch (innerErr) {
+      console.error("日历渲染异常:", innerErr);
+      // 已保底渲染，无需重复
+    }
   }).catch(err => {
     console.error("日历数据加载失败:", err);
-    _renderCalCells(grid, first, days, {}, {}, floating);
+    // 已保底渲染，无需重复
   });
   function _renderCalCells(grid, first, days, todoMap, expoMap, floating) {
+    grid.innerHTML = ""; // 清空之前内容，避免重复渲染
     for (let i = 0; i < first; i++) grid.appendChild(el("div"));
     for (let d = 1; d <= days; d++) {
       const ds = `${STATE.calYear}-${String(STATE.calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
