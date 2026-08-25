@@ -513,7 +513,10 @@ function calendarPanel(floating) {
       // 展会标签（先显示，更醒目）
       if (expoMap[ds]) {
         const expoList = el("div", { class: "cal-expos" });
+        const seen = new Set();
         expoMap[ds].forEach(e => {
+          if (seen.has(e.name)) return;
+          seen.add(e.name);
           const ei = el("div", { class: "cal-expo" }, e.name);
           ei.title = `${e.name} \u00b7 ${e.city || ''} \u00b7 ${e.date_text || ''}`;
           expoList.appendChild(ei);
