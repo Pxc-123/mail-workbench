@@ -615,6 +615,8 @@ async function getCustTypes(force) {
     const tags = (r.data || []).map(t => t.name);
     // 如果标签为空，给个默认兜底
     if (!tags.length) tags.push("全部客户");
+    // 始终在最前面插入"通用客户"，方便处理"导入的客户没有标记类型"的场景
+    if (!tags.includes("通用客户")) tags.unshift("通用客户");
     CUST_TYPES_CACHE = tags;
   }
   return CUST_TYPES_CACHE;

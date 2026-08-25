@@ -505,12 +505,52 @@ SCENE_LABELS = {
 TONE_LABELS = {"正式商务": "正式商务", "简洁干练": "简洁干练", "温和友好": "温和友好", "简短": "简短"}
 
 TYPE_INTRO = {
+    # 基础展品类型（短名称）
     "预制菜": "贵司在预制菜领域的产品矩阵与出海布局",
     "调味品": "贵司在调味品赛道的产品创新与海外渠道拓展",
     "零食": "贵司在休闲零食品类的爆款打造与跨境销售",
     "原料": "贵司作为食品原料供应商的产能与品质优势",
     "综合食品企业": "贵司综合食品业务的多品类出海机会",
+    # 标签管理中的完整客户类型（与 /api/tags 返回的名称一一对应）
+    "预制菜客户": "贵司在预制菜领域的产品矩阵与出海布局",
+    "调味品客户": "贵司在调味品赛道的产品创新与海外渠道拓展",
+    "零食客户": "贵司在休闲零食品类的爆款打造与跨境销售",
+    "原料客户": "贵司作为食品原料供应商的产能与品质优势",
+    "待跟进": "贵司的产品在海外市场的潜力",
+    "高意向": "贵司对本次展会的关注与参展意愿",
+    # 兜底
+    "通用客户": "贵司在食品领域的产品与渠道优势",
+    "食品企业": "贵司在食品领域的产品与渠道优势",
 }
+
+def _resolve_type_intro(ctype):
+    """根据客户类型名称返回展品说明（支持精确匹配 + 模糊匹配）。
+    1) 先精确匹配 TYPE_INTRO；
+    2) 再按关键字模糊匹配（预制菜/调味品/零食/原料/综合/食品）；
+    3) 都不匹配时回退到通用兜底。"""
+    if not ctype:
+        return "贵司在食品领域的产品与渠道优势"
+    t = ctype.strip()
+    if t in TYPE_INTRO:
+        return TYPE_INTRO[t]
+    # 模糊匹配：标签名包含关键字 → 取对应说明
+    if "预制菜" in t:
+        return TYPE_INTRO["预制菜"]
+    if "调味品" in t:
+        return TYPE_INTRO["调味品"]
+    if "零食" in t:
+        return TYPE_INTRO["零食"]
+    if "原料" in t:
+        return TYPE_INTRO["原料"]
+    if "综合" in t:
+        return TYPE_INTRO["综合食品企业"]
+    if "待跟进" in t or "跟进" in t:
+        return TYPE_INTRO["待跟进"]
+    if "高意向" in t or "意向" in t:
+        return TYPE_INTRO["高意向"]
+    if "食品" in t:
+        return TYPE_INTRO["食品企业"]
+    return "贵司在食品领域的产品与渠道优势"
 
 # 展会特色数据(用于生成差异化文案)
 # 说明：以下数据基于公开网络检索（各展会官网 / 行业资讯）整理，覆盖城市、档期、
@@ -1172,7 +1212,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
     ctype = customer_type or "食品企业"
     scene_key = scene if scene in SCENE_LABELS else "1"
     tone_key = tone if tone in TONE_LABELS else "正式商务"
-    intro = TYPE_INTRO.get(ctype, "贵司在食品领域的产品与渠道优势")
+    intro = _resolve_type_intro(ctype)
     news = (custom_input or "").strip()
     # 场景2「跟进意向客户推送最新行业新闻」：若用户未手动提供资讯，
     # 后端自动抓取真实新闻作为安全网（best-effort，失败则保留通用兜底）。
@@ -1350,6 +1390,7 @@ def build_email(exhibition, customer_type, scene, tone, custom_input,  signature
                 f"举办城市：{profile.get('city') or '待定'}\n"
                 f"展会亮点参考：{('、'.join(_hl_uniq[:3]) if _hl_uniq else '详见资料')}\n"
                 f"客户类型：{ctype}；使用场景：{SCENE_LABELS.get(scene_key, scene_key)}；语气：{tone_key}\n"
+                f"客户展品说明：{intro}。请围绕该展品类型展开，正文里自然体现其出海参展的独特价值与契合点（例如预制菜可强调即食便利与冷链对接，调味品可强调口味本地化与包装合规，零食可强调年轻化消费与跨境爆款，原料可强调供应链稳定与大宗采购对接等）。\n"
             )
             if _angle_desc:
                 _prompt += f"本次写作角度：{_angle_desc}\n"
