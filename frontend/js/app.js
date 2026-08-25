@@ -1985,9 +1985,21 @@ async function parseExpoFileLocal(b64, filename) {
         if (cells.some(c => c)) rows.push(cells);
       }
     } else {
-      // xlsx/xls — 无法在纯前端无依赖解析，返回提示让用户直接点导入
-      headers = ["展会名称", "城市", "档期", "备注"];
-      return { headers, rows: [], hint: "xlsx 文件将在服务端解析，请直接点击「确认导入」" };
+      // xlsx/xls — 前端用 SheetJS 解析（已内嵌在页面）
+      if (typeof XLSX === "undefined") {
+        headers = ["展会名称", "城市", "档期", "备注"];
+        return { headers, rows: [], hint: "xlsx 文件将在服务端解析，请直接点击「确认导入」" };
+      }
+      const bytes = new Uint8Array(raw.split("").map(c => c.charCodeAt(0)));
+      const wb = XLSX.read(bytes, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      if (!data || !data.length) return { error: "Excel 文件为空" };
+      headers = data[0].map(h => String(h || "").trim());
+      for (let i = 1; i < data.length; i++) {
+        const row = data[i].map(c => String(c || "").trim());
+        if (row.some(c => c)) rows.push(row);
+      }
     }
   } catch(e) {
     return { error: "解析失败：" + e.message };
