@@ -448,8 +448,8 @@ async function refreshBell() {
 let EXHIBITIONS = [];
 let CUST_TYPES_CACHE = []; // 动态从 /api/tags 加载
 async function getExhibitions(force) { if (force || !EXHIBITIONS.length) { const r = await api("GET", "/api/exhibitions"); EXHIBITIONS = r.data || []; } return EXHIBITIONS; }
-async function getCustTypes() {
-  if (!CUST_TYPES_CACHE.length) {
+async function getCustTypes(force) {
+  if (force || !CUST_TYPES_CACHE.length) {
     const r = await api("GET", "/api/tags");
     const tags = (r.data || []).map(t => t.name);
     // 如果标签为空，给个默认兜底
@@ -764,7 +764,7 @@ function viewGen() {
   left.appendChild(el("div", { class: "label", style: "margin-top:12px" }, "2. 选择客户类型"));
   const ctSel = el("select", { class: "inp", id: "cfg-ct" }, [el("option", { value: "" }, "加载中…")]);
   left.appendChild(ctSel);
-  getCustTypes().then(types => {
+  getCustTypes(true).then(types => {
     ctSel.innerHTML = "";
     types.forEach(t => ctSel.appendChild(el("option", { value: t }, t)));
     if (STATE.gen.customer_type && [...ctSel.options].some(o => o.value === STATE.gen.customer_type)) ctSel.value = STATE.gen.customer_type;
@@ -1822,21 +1822,17 @@ function viewExposManage() {
         const e1 = el("button", { class: "btn btn-sm", style: "margin-right:6px" }, "✏️ 编辑");
         e1.onclick = () => editExhibitionModal(e);
         td.appendChild(e1);
-        if (e.user_id != 0) {
-          const d1 = el("button", { class: "btn btn-sm btn-danger" }, "删除");
-          d1.onclick = async () => {
-            const cnt = e.material_count || 0;
-            let msg = "确认删除展会「" + e.name + "」？";
-            if (cnt > 0) msg += "该展会下有 " + cnt + " 个资料，删除后这些资料的『所属展会』会变成『通用』。";
-            if (!confirm(msg)) return;
-            const r2 = await api("DELETE", "/api/exhibitions/" + e.id);
-            if (!r2.ok) { toast("删除失败：" + (r2.data.error || "")); return; }
-            toast("已删除"); render();
-          };
-          td.appendChild(d1);
-        } else {
-          td.appendChild(el("span", { class: "muted", style: "font-size:12px" }, "系统级不可删"));
-        }
+        const d1 = el("button", { class: "btn btn-sm btn-danger" }, "删除");
+        d1.onclick = async () => {
+          const cnt = e.material_count || 0;
+          let msg = "确认删除展会「" + e.name + "」？";
+          if (cnt > 0) msg += "该展会下有 " + cnt + " 个资料，删除后这些资料的『所属展会』会变成『通用』。";
+          if (!confirm(msg)) return;
+          const r2 = await api("DELETE", "/api/exhibitions/" + e.id);
+          if (!r2.ok) { toast("删除失败：" + (r2.data.error || "")); return; }
+          toast("已删除"); render();
+        };
+        td.appendChild(d1);
         tr.appendChild(td);
         t.appendChild(tr);
       });

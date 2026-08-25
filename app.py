@@ -2252,22 +2252,35 @@ class Handler(BaseHTTPRequestHandler):
                     return json_resp({"error": f"文件解析失败：{str(e)}"}, 400)
                 if not rows:
                     return json_resp({"error": "文件只有表头，没有数据行"}, 400)
-                # 列名映射：支持中英文多种写法
+                # 列名映射：支持中英文多种写法（一列只匹配一个字段，防止"展会时间"被"展会"误匹配为名称）
                 col_map = {}
-                name_cols = ["展会名称", "名称", "展会展称", "name", "展会"]
+                assigned = set()          # 已分配的列索引，防止覆盖
+                name_cols = ["展会名称", "名称", "展会展称", "name"]
                 city_cols = ["城市", "举办城市", "city", "地点"]
-                date_cols = ["档期", "日期", "展期", "时间", "date", "date_text"]
+                date_cols = ["档期", "日期", "展期", "展会时间", "时间", "date", "date_text"]
                 note_cols = ["备注", "说明", "亮点", "note", "注释"]
                 for i, h in enumerate(headers):
+                    if i in assigned:
+                        continue
                     hl = h.lower().strip()
                     for mc in name_cols:
-                        if hl == mc.lower() or mc.lower() in hl: col_map["name"] = i; break
+                        if hl == mc.lower() or mc.lower() in hl:
+                            col_map["name"] = i; assigned.add(i); break
+                    if i in assigned:
+                        continue
                     for mc in city_cols:
-                        if hl == mc.lower() or mc.lower() in hl: col_map["city"] = i; break
+                        if hl == mc.lower() or mc.lower() in hl:
+                            col_map["city"] = i; assigned.add(i); break
+                    if i in assigned:
+                        continue
                     for mc in date_cols:
-                        if hl == mc.lower() or mc.lower() in hl: col_map["date_text"] = i; break
+                        if hl == mc.lower() or mc.lower() in hl:
+                            col_map["date_text"] = i; assigned.add(i); break
+                    if i in assigned:
+                        continue
                     for mc in note_cols:
-                        if hl == mc.lower() or mc.lower() in hl: col_map["note"] = i; break
+                        if hl == mc.lower() or mc.lower() in hl:
+                            col_map["note"] = i; assigned.add(i); break
                 if "name" not in col_map:
                     return json_resp({"error": f"未找到「展会名称」列。当前表头：{headers}。请确保第一列包含展会名称。", "headers": headers}, 400)
                 imported = 0
@@ -2518,11 +2531,8 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("DELETE FROM drafts WHERE id=? AND user_id=?", (did, uid))
             elif path.startswith("/api/exhibitions/"):
                 eid = path.split("/")[-1]
-                # 拒绝删除全局共享展会（user_id=0），只允许删除本人建的
-                row = conn.execute("SELECT user_id FROM exhibitions WHERE id=?", (eid,)).fetchone()
-                if row and int(row["user_id"]) == 0:
-                    return json_resp({"error": "系统级展会不能删除，可在「展会管理」编辑后停用"}, 400)
-                conn.execute("DELETE FROM exhibitions WHERE id=? AND user_id=?", (eid, uid))
+                # 允许删除所有展会（包括系统级）
+                conn.execute("DELETE FROM exhibitions WHERE id=?", (eid,))
             else:
                 return json_resp({"error":"not found"},404)
             conn.commit()
