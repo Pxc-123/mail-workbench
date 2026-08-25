@@ -443,6 +443,12 @@ function calendarPanel(floating) {
         });
       }
     });
+    _renderCalCells(grid, first, days, todoMap, expoMap, floating);
+  }).catch(err => {
+    console.error("日历数据加载失败:", err);
+    _renderCalCells(grid, first, days, {}, {}, floating);
+  });
+  function _renderCalCells(grid, first, days, todoMap, expoMap, floating) {
     for (let i = 0; i < first; i++) grid.appendChild(el("div"));
     for (let d = 1; d <= days; d++) {
       const ds = `${STATE.calYear}-${String(STATE.calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -453,7 +459,7 @@ function calendarPanel(floating) {
         const expoList = el("div", { class: "cal-expos" });
         expoMap[ds].forEach(e => {
           const ei = el("div", { class: "cal-expo" }, e.name);
-          ei.title = `${e.name} · ${e.city || ''} · ${e.date_text || ''}`;
+          ei.title = `${e.name} \u00b7 ${e.city || ''} \u00b7 ${e.date_text || ''}`;
           expoList.appendChild(ei);
         });
         cell.appendChild(expoList);
@@ -464,7 +470,7 @@ function calendarPanel(floating) {
         todoMap[ds].forEach(t => {
           const ti = el("div", { class: "cal-todo" + (t.done ? " done" : "") }, t.title);
           if (!t.done) {
-            const priColor = t.priority === "高" ? "#dc2626" : t.priority === "中" ? "#d97706" : "#6b7280";
+            const priColor = t.priority === "\u9ad8" ? "#dc2626" : t.priority === "\u4e2d" ? "#d97706" : "#6b7280";
             ti.style.borderLeft = `3px solid ${priColor}`;
           }
           todoList.appendChild(ti);
@@ -477,11 +483,11 @@ function calendarPanel(floating) {
         const bindInput = document.querySelector('#todo-bind');
         if (bindInput) bindInput.value = ds;
         box.replaceWith(calendarPanel(floating));
-        toast("已选择 " + ds + "，新增待办将绑定该日");
+        toast("\u5df2\u9009\u62e9 " + ds + "\uff0c\u65b0\u589e\u5f85\u529e\u5c06\u7ed1\u5b9a\u8be5\u65e5");
       };
       grid.appendChild(cell);
     }
-  });
+  }
   box.appendChild(grid);
   return box;
 }
